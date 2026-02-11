@@ -9,13 +9,12 @@ import {
   ScrollView,
   TouchableOpacity,
 } from 'react-native';
-import type { StackScreenProps } from '@react-navigation/stack';
+import { useNavigation } from '@react-navigation/native';
+import type { StackNavigationProp } from '@react-navigation/stack';
 import type { SearchStackParamList } from '../../types/navigation';
 import { colors } from '../../theme/colors';
 import { spacing, borderRadius } from '../../theme/spacing';
 import { fontSize, fontWeight } from '../../theme/typography';
-
-type Props = StackScreenProps<SearchStackParamList, 'Search'>;
 
 const FILTER_CHIPS = ['All', 'Food', 'Electronics', 'Keys', 'Clothing'];
 
@@ -44,7 +43,8 @@ const MOCK_RESULTS: SearchResultItem[] = [
   { id: '5', name: 'Yoga Mat', category: 'Sports', room: 'Bedroom', zone: 'Closet', lastSeen: '1 week ago', color: '#60A5FA' },
 ];
 
-export default function SearchScreen({ navigation }: Props) {
+export default function SearchScreen() {
+  const navigation = useNavigation<StackNavigationProp<SearchStackParamList>>();
   const [query, setQuery] = useState('');
   const [activeFilter, setActiveFilter] = useState('All');
   const inputRef = useRef<TextInput>(null);

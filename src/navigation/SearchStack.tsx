@@ -13,7 +13,7 @@ export default function SearchStack() {
         headerStyle: { backgroundColor: '#FFFFFF', elevation: 0, shadowOpacity: 0 },
         headerTintColor: '#111827',
         headerTitleStyle: { fontWeight: '700', fontSize: 18 },
-        headerBackTitleVisible: false,
+        headerBackTitle: '',
       }}
     >
       <Stack.Screen

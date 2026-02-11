@@ -44,7 +44,7 @@ export default function SettingsStack() {
           fontWeight: fontWeight.bold,
           fontSize: fontSize.xl,
         },
-        headerBackTitleVisible: false,
+        headerBackTitle: '',
       }}
     >
       <Stack.Screen

@@ -115,7 +115,7 @@ export async function searchItems(
   }
 
   const items = await itemsCollection
-    .query(Q.and(...andClauses))
+    .query(...(andClauses as Q.Where[]))
     .fetch();
 
   // Resolve room names for the result set

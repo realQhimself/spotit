@@ -7,16 +7,12 @@ import {
   ScrollView,
   TouchableOpacity,
 } from 'react-native';
-import type { StackScreenProps } from '@react-navigation/stack';
+import { useRoute } from '@react-navigation/native';
+import type { RouteProp } from '@react-navigation/native';
 import type { RoomsStackParamList } from '../../types/navigation';
 import { colors } from '../../theme/colors';
 import { spacing, borderRadius } from '../../theme/spacing';
 import { fontSize, fontWeight } from '../../theme/typography';
-
-// This screen can appear in multiple stacks (Home, Rooms, Search).
-// Using RoomsStackParamList as the primary type since it is the most
-// common entry point.
-type Props = StackScreenProps<RoomsStackParamList, 'ItemDetail'>;
 
 const MOCK_ITEM = {
   id: 'i1',
@@ -39,7 +35,8 @@ function getConfidenceColor(confidence: number): string {
   return colors.danger;
 }
 
-export default function ItemDetailScreen({ route }: Props) {
+export default function ItemDetailScreen() {
+  const route = useRoute<RouteProp<RoomsStackParamList, 'ItemDetail'>>();
   const { itemId } = route.params;
   const [isFavorite, setIsFavorite] = useState(false);
   const confPercent = Math.round(MOCK_ITEM.confidence * 100);
