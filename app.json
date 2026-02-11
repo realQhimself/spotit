@@ -36,6 +36,14 @@
     },
     "plugins": [
       "expo-secure-store"
-    ]
+    ],
+    "web": {
+      "bundler": "metro",
+      "output": "single",
+      "favicon": "./assets/favicon.png"
+    },
+    "experiments": {
+      "baseUrl": "/spotit"
+    }
   }
 }
