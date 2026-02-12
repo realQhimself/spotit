@@ -1,1 +1,44 @@
-Not Found
+⚠️ YOLO MODEL NEEDED ⚠️
+
+The model file is too large to download directly from public repositories
+(they use Git LFS which requires special tools).
+
+🚀 FASTEST SOLUTION (5 minutes):
+
+1. Open Google Colab: https://colab.research.google.com/
+
+2. Create a new notebook and paste this code:
+
+   !pip install ultralytics -q
+   from ultralytics import YOLO
+   model = YOLO('yolo11n.pt')
+   model.export(format='tflite', imgsz=640)
+   from google.colab import files
+   files.download('yolo11n_saved_model/yolo11n_float32.tflite')
+
+3. Run the cell (click the play button or press Shift+Enter)
+
+4. Wait ~2 minutes for it to download and convert
+
+5. The file will download to your computer automatically
+
+6. Rename it from "yolo11n_float32.tflite" to "yolo11n.tflite"
+
+7. Replace this file with the downloaded model
+
+✅ Once you have the model file:
+   - Size should be ~5-6 MB
+   - Name must be: yolo11n.tflite
+   - Location: /Users/qmacmini/spotit/assets/models/yolo11n.tflite
+
+Then rebuild and test:
+   npx expo run:ios
+   # or
+   npx expo run:android
+
+🎉 That's it! The app will detect objects in real-time!
+
+---
+
+Alternative: Ask a friend with good internet to run the export_yolo_model.py
+script and send you the file via AirDrop/cloud storage.
