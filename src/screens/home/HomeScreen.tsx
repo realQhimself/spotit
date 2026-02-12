@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   View,
   Text,
@@ -14,32 +14,93 @@ import type { HomeStackParamList } from '../../types/navigation';
 import { colors } from '../../theme/colors';
 import { spacing, borderRadius } from '../../theme/spacing';
 import { fontSize, fontWeight } from '../../theme/typography';
+import database from '../../database';
+import type Room from '../../database/models/Room';
+import type Item from '../../database/models/Item';
+import { getAllRooms } from '../../database/helpers/roomHelpers';
+import { getRecentItems, getItemCount } from '../../database/helpers/itemHelpers';
 
 type Props = StackScreenProps<HomeStackParamList, 'HomeScreen'>;
 
-// -- Placeholder data --------------------------------------------------------
+// -- Color palette for room cards (cycled by position) -----------------------
 
-const STATS = [
-  { label: 'Items', count: 0, icon: '\u{1F4E6}', color: colors.primary },
-  { label: 'Rooms', count: 0, icon: '\u{1F6AA}', color: colors.success },
-  { label: 'Scans', count: 0, icon: '\u{1F4F7}', color: colors.warning },
+const ROOM_COLORS = [
+  '#EEF2FF',
+  '#ECFDF5',
+  '#FEF3C7',
+  '#FEE2E2',
+  '#E0E7FF',
+  '#FCE7F3',
+  '#F0FDF4',
+  '#FFF7ED',
 ];
 
-const RECENT_SCANS = [
-  { id: '1', name: 'Kitchen counter', itemCount: 8, date: '2 hours ago' },
-  { id: '2', name: 'Living room shelf', itemCount: 12, date: 'Yesterday' },
-  { id: '3', name: 'Office desk', itemCount: 5, date: '3 days ago' },
-];
+// -- Relative-time helper ----------------------------------------------------
 
-const ROOMS = [
-  { id: '1', name: 'Kitchen', itemCount: 24, color: '#EEF2FF' },
-  { id: '2', name: 'Living Room', itemCount: 18, color: '#ECFDF5' },
-  { id: '3', name: 'Bedroom', itemCount: 12, color: '#FEF3C7' },
-  { id: '4', name: 'Office', itemCount: 31, color: '#FEE2E2' },
-  { id: '5', name: 'Garage', itemCount: 9, color: '#E0E7FF' },
-];
+function timeAgo(date: Date): string {
+  const now = Date.now();
+  const diffMs = now - date.getTime();
+  const diffSec = Math.floor(diffMs / 1000);
+  const diffMin = Math.floor(diffSec / 60);
+  const diffHr = Math.floor(diffMin / 60);
+  const diffDay = Math.floor(diffHr / 24);
+
+  if (diffSec < 60) return 'Just now';
+  if (diffMin < 60) return `${diffMin}m ago`;
+  if (diffHr < 24) return `${diffHr}h ago`;
+  if (diffDay === 1) return 'Yesterday';
+  if (diffDay < 30) return `${diffDay}d ago`;
+  return date.toLocaleDateString();
+}
 
 export default function HomeScreen({ navigation }: Props) {
+  // ── Live state from WatermelonDB ────────────────────────────────────
+  const [rooms, setRooms] = useState<Room[]>([]);
+  const [recentItems, setRecentItems] = useState<Item[]>([]);
+  const [itemCount, setItemCount] = useState(0);
+  const [scanCount, setScanCount] = useState(0);
+
+  // Subscribe to rooms observable
+  useEffect(() => {
+    const sub = getAllRooms().subscribe(setRooms);
+    return () => sub.unsubscribe();
+  }, []);
+
+  // Subscribe to recent items observable
+  useEffect(() => {
+    const sub = getRecentItems(5).subscribe(setRecentItems);
+    return () => sub.unsubscribe();
+  }, []);
+
+  // Fetch item count (re-fetch whenever recentItems changes as a proxy for data changes)
+  useEffect(() => {
+    let cancelled = false;
+    getItemCount().then((count) => {
+      if (!cancelled) setItemCount(count);
+    });
+    return () => { cancelled = true; };
+  }, [recentItems]);
+
+  // Fetch scan count (re-fetch whenever rooms change as a proxy for data changes)
+  useEffect(() => {
+    let cancelled = false;
+    database
+      .get('scans')
+      .query()
+      .fetchCount()
+      .then((count) => {
+        if (!cancelled) setScanCount(count);
+      });
+    return () => { cancelled = true; };
+  }, [rooms]);
+
+  // Build stats from live data
+  const stats = [
+    { label: 'Items', count: itemCount, icon: '\u{1F4E6}', color: colors.primary },
+    { label: 'Rooms', count: rooms.length, icon: '\u{1F6AA}', color: colors.success },
+    { label: 'Scans', count: scanCount, icon: '\u{1F4F7}', color: colors.warning },
+  ];
+
   return (
     <SafeAreaView style={styles.safeArea}>
       <ScrollView
@@ -71,7 +132,7 @@ export default function HomeScreen({ navigation }: Props) {
 
         {/* Stats Row */}
         <View style={styles.statsRow}>
-          {STATS.map((stat) => (
+          {stats.map((stat) => (
             <View key={stat.label} style={styles.statCard}>
               <View style={[styles.statIconBg, { backgroundColor: stat.color + '15' }]}>
                 <Text style={styles.statIcon}>{stat.icon}</Text>
@@ -82,27 +143,34 @@ export default function HomeScreen({ navigation }: Props) {
           ))}
         </View>
 
-        {/* Recent Scans */}
+        {/* Recent Items */}
         <View style={styles.sectionHeader}>
-          <Text style={styles.sectionTitle}>Recent Scans</Text>
+          <Text style={styles.sectionTitle}>Recent Items</Text>
           <TouchableOpacity>
             <Text style={styles.seeAll}>See All</Text>
           </TouchableOpacity>
         </View>
 
         <FlatList
-          data={RECENT_SCANS}
+          data={recentItems}
           keyExtractor={(item) => item.id}
           scrollEnabled={false}
+          ListEmptyComponent={
+            <View style={styles.scanCard}>
+              <View style={styles.scanInfo}>
+                <Text style={styles.scanMeta}>No items yet. Start scanning!</Text>
+              </View>
+            </View>
+          }
           renderItem={({ item }) => (
             <TouchableOpacity style={styles.scanCard} activeOpacity={0.7}>
               <View style={styles.scanThumbnail}>
-                <Text style={styles.scanThumbnailText}>{'\u{1F4F7}'}</Text>
+                <Text style={styles.scanThumbnailText}>{'\u{1F4E6}'}</Text>
               </View>
               <View style={styles.scanInfo}>
                 <Text style={styles.scanName}>{item.name}</Text>
                 <Text style={styles.scanMeta}>
-                  {item.itemCount} items {'\u00B7'} {item.date}
+                  {item.category} {'\u00B7'} {timeAgo(item.createdAt)}
                 </Text>
               </View>
               <Text style={styles.chevron}>{'\u203A'}</Text>
@@ -123,19 +191,32 @@ export default function HomeScreen({ navigation }: Props) {
           showsHorizontalScrollIndicator={false}
           contentContainerStyle={styles.roomsScroll}
         >
-          {ROOMS.map((room) => (
-            <TouchableOpacity
-              key={room.id}
-              style={[styles.roomCard, { backgroundColor: room.color }]}
-              activeOpacity={0.7}
-            >
+          {rooms.length === 0 ? (
+            <View style={[styles.roomCard, { backgroundColor: ROOM_COLORS[0] }]}>
               <View style={styles.roomIcon}>
-                <Text style={{ fontSize: 28 }}>{'\u{1F3E0}'}</Text>
+                <Text style={{ fontSize: 28 }}>{'\u2795'}</Text>
               </View>
-              <Text style={styles.roomName}>{room.name}</Text>
-              <Text style={styles.roomItemCount}>{room.itemCount} items</Text>
-            </TouchableOpacity>
-          ))}
+              <Text style={styles.roomName}>Add a Room</Text>
+              <Text style={styles.roomItemCount}>Get started</Text>
+            </View>
+          ) : (
+            rooms.map((room, index) => (
+              <TouchableOpacity
+                key={room.id}
+                style={[
+                  styles.roomCard,
+                  { backgroundColor: ROOM_COLORS[index % ROOM_COLORS.length] },
+                ]}
+                activeOpacity={0.7}
+              >
+                <View style={styles.roomIcon}>
+                  <Text style={{ fontSize: 28 }}>{'\u{1F3E0}'}</Text>
+                </View>
+                <Text style={styles.roomName}>{room.name}</Text>
+                <Text style={styles.roomItemCount}>{room.itemCount} items</Text>
+              </TouchableOpacity>
+            ))
+          )}
         </ScrollView>
 
         <View style={{ height: spacing.xxl }} />

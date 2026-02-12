@@ -7,12 +7,16 @@ import {
   ScrollView,
   TextInput,
   TouchableOpacity,
+  Alert,
+  ActivityIndicator,
 } from 'react-native';
 import type { StackScreenProps } from '@react-navigation/stack';
 import type { ScanStackParamList } from '../../types/navigation';
 import { colors } from '../../theme/colors';
 import { spacing, borderRadius } from '../../theme/spacing';
 import { fontSize, fontWeight } from '../../theme/typography';
+import { createItem } from '../../database/helpers/itemHelpers';
+import { useScanStore } from '../../store/useScanStore';
 
 type Props = StackScreenProps<ScanStackParamList, 'ScanReview'>;
 
@@ -43,6 +47,7 @@ function getConfidenceColor(confidence: number): string {
 export default function ScanReviewScreen({ route, navigation }: Props) {
   const { scanId } = route.params;
   const [detections, setDetections] = useState(INITIAL_DETECTIONS);
+  const [isSaving, setIsSaving] = useState(false);
 
   const handleDismiss = (id: string) => {
     setDetections((prev) => prev.filter((d) => d.id !== id));
@@ -52,6 +57,58 @@ export default function ScanReviewScreen({ route, navigation }: Props) {
     setDetections((prev) =>
       prev.map((d) => (d.id === id ? { ...d, name: newName } : d)),
     );
+  };
+
+  const handleSaveAll = async () => {
+    const { selectedRoomId, selectedZoneId, clearDetections } =
+      useScanStore.getState();
+
+    if (!selectedRoomId) {
+      Alert.alert(
+        'No Room Selected',
+        'Please select a room before saving items. Go back and choose a room from the scan settings.',
+        [{ text: 'OK' }],
+      );
+      return;
+    }
+
+    if (detections.length === 0) {
+      Alert.alert('No Items', 'There are no items to save.');
+      return;
+    }
+
+    setIsSaving(true);
+
+    try {
+      const savePromises = detections.map((item) =>
+        createItem({
+          name: item.name,
+          category: item.category,
+          roomId: selectedRoomId,
+          zoneId: selectedZoneId ?? undefined,
+          confidence: item.confidence,
+        }),
+      );
+
+      await Promise.all(savePromises);
+
+      clearDetections();
+
+      Alert.alert(
+        'Items Saved',
+        `Successfully saved ${detections.length} item${detections.length === 1 ? '' : 's'}.`,
+        [{ text: 'OK', onPress: () => navigation.popToTop() }],
+      );
+    } catch (error) {
+      console.error('Failed to save items:', error);
+      Alert.alert(
+        'Save Failed',
+        'Something went wrong while saving items. Please try again.',
+        [{ text: 'OK' }],
+      );
+    } finally {
+      setIsSaving(false);
+    }
   };
 
   return (
@@ -155,11 +212,16 @@ export default function ScanReviewScreen({ route, navigation }: Props) {
       {/* Save Button */}
       <View style={styles.bottomBar}>
         <TouchableOpacity
-          style={styles.saveButton}
+          style={[styles.saveButton, isSaving && styles.saveButtonDisabled]}
           activeOpacity={0.8}
-          onPress={() => navigation.popToTop()}
+          onPress={handleSaveAll}
+          disabled={isSaving}
         >
-          <Text style={styles.saveButtonText}>Save All Items</Text>
+          {isSaving ? (
+            <ActivityIndicator color="#FFFFFF" size="small" />
+          ) : (
+            <Text style={styles.saveButtonText}>Save All Items</Text>
+          )}
         </TouchableOpacity>
       </View>
     </SafeAreaView>
@@ -355,6 +417,9 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.25,
     shadowRadius: 8,
     elevation: 4,
+  },
+  saveButtonDisabled: {
+    opacity: 0.6,
   },
   saveButtonText: {
     fontSize: fontSize.lg,

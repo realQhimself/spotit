@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   View,
   Text,
@@ -10,41 +10,17 @@ import {
 } from 'react-native';
 import type { StackScreenProps } from '@react-navigation/stack';
 import type { RoomsStackParamList } from '../../types/navigation';
+import type Room from '../../database/models/Room';
+import type Zone from '../../database/models/Zone';
+import type Item from '../../database/models/Item';
+import { getRoomById } from '../../database/helpers/roomHelpers';
+import { getZonesByRoom } from '../../database/helpers/zoneHelpers';
+import { getItemsByRoom } from '../../database/helpers/itemHelpers';
 import { colors } from '../../theme/colors';
 import { spacing, borderRadius } from '../../theme/spacing';
 import { fontSize, fontWeight } from '../../theme/typography';
 
 type Props = StackScreenProps<RoomsStackParamList, 'RoomDetail'>;
-
-interface MockZone {
-  id: string;
-  name: string;
-  type: string;
-  itemCount: number;
-}
-
-interface MockItem {
-  id: string;
-  name: string;
-  category: string;
-  confidence: number;
-  lastSeen: string;
-}
-
-const MOCK_ZONES: MockZone[] = [
-  { id: 'z1', name: 'Main Fridge', type: 'fridge', itemCount: 12 },
-  { id: 'z2', name: 'Pantry Cabinet', type: 'cabinet', itemCount: 8 },
-  { id: 'z3', name: 'Counter Top', type: 'surface', itemCount: 5 },
-  { id: 'z4', name: 'Utensil Drawer', type: 'drawer', itemCount: 14 },
-];
-
-const MOCK_ITEMS: MockItem[] = [
-  { id: 'i1', name: 'Coffee Maker', category: 'Appliance', confidence: 0.97, lastSeen: 'Today' },
-  { id: 'i2', name: 'Cutting Board', category: 'Kitchenware', confidence: 0.91, lastSeen: 'Today' },
-  { id: 'i3', name: 'Olive Oil', category: 'Food', confidence: 0.88, lastSeen: 'Yesterday' },
-  { id: 'i4', name: 'Toaster', category: 'Appliance', confidence: 0.95, lastSeen: 'Today' },
-  { id: 'i5', name: 'Chef Knife', category: 'Kitchenware', confidence: 0.84, lastSeen: '2 days ago' },
-];
 
 const ZONE_ICONS: Record<string, string> = {
   fridge: '\u{1F9CA}',
@@ -54,6 +30,16 @@ const ZONE_ICONS: Record<string, string> = {
   closet: '\u{1F6AA}',
   default: '\u{1F4E6}',
 };
+
+function relativeTime(date: Date | null | undefined): string {
+  if (!date) return '';
+  const now = new Date();
+  const diff = now.getTime() - date.getTime();
+  const days = Math.floor(diff / (1000 * 60 * 60 * 24));
+  if (days === 0) return 'Today';
+  if (days === 1) return 'Yesterday';
+  return `${days} days ago`;
+}
 
 function getConfidenceColor(confidence: number): string {
   if (confidence >= 0.9) return colors.success;
@@ -65,10 +51,10 @@ function ZoneCard({
   zone,
   onPress,
 }: {
-  zone: MockZone;
+  zone: Zone;
   onPress: () => void;
 }) {
-  const icon = ZONE_ICONS[zone.type] || ZONE_ICONS.default;
+  const icon = ZONE_ICONS[zone.zoneType] || ZONE_ICONS.default;
 
   return (
     <TouchableOpacity style={styles.zoneCard} activeOpacity={0.7} onPress={onPress}>
@@ -87,7 +73,7 @@ function ItemCard({
   item,
   onPress,
 }: {
-  item: MockItem;
+  item: Item;
   onPress: () => void;
 }) {
   const confPercent = Math.round(item.confidence * 100);
@@ -119,13 +105,32 @@ function ItemCard({
           </View>
         </View>
       </View>
-      <Text style={styles.itemLastSeen}>{item.lastSeen}</Text>
+      <Text style={styles.itemLastSeen}>{relativeTime(item.lastSeenAt)}</Text>
     </TouchableOpacity>
   );
 }
 
 export default function RoomDetailScreen({ route, navigation }: Props) {
   const { roomId } = route.params;
+
+  const [room, setRoom] = useState<Room | null>(null);
+  const [zones, setZones] = useState<Zone[]>([]);
+  const [items, setItems] = useState<Item[]>([]);
+
+  useEffect(() => {
+    getRoomById(roomId)
+      .then(setRoom)
+      .catch((err) => console.error('Failed to load room:', err));
+  }, [roomId]);
+
+  useEffect(() => {
+    const zoneSub = getZonesByRoom(roomId).subscribe(setZones);
+    const itemSub = getItemsByRoom(roomId).subscribe(setItems);
+    return () => {
+      zoneSub.unsubscribe();
+      itemSub.unsubscribe();
+    };
+  }, [roomId]);
 
   return (
     <SafeAreaView style={styles.container}>
@@ -136,7 +141,7 @@ export default function RoomDetailScreen({ route, navigation }: Props) {
         {/* Room Header Image Placeholder */}
         <View style={styles.heroImage}>
           <Text style={styles.heroEmoji}>{'\u{1F3E0}'}</Text>
-          <Text style={styles.heroRoomName}>Kitchen</Text>
+          <Text style={styles.heroRoomName}>{room?.name ?? 'Loading...'}</Text>
           <Text style={styles.heroRoomId}>ID: {roomId}</Text>
         </View>
 
@@ -148,7 +153,7 @@ export default function RoomDetailScreen({ route, navigation }: Props) {
             showsHorizontalScrollIndicator={false}
             contentContainerStyle={styles.zonesScroll}
           >
-            {MOCK_ZONES.map((zone) => (
+            {zones.map((zone) => (
               <ZoneCard
                 key={zone.id}
                 zone={zone}
@@ -163,13 +168,13 @@ export default function RoomDetailScreen({ route, navigation }: Props) {
         {/* All Items Section */}
         <View style={styles.section}>
           <Text style={styles.sectionTitle}>All Items</Text>
-          {MOCK_ITEMS.length === 0 ? (
+          {items.length === 0 ? (
             <View style={styles.emptyState}>
               <Text style={styles.emptyText}>No items found in this room</Text>
             </View>
           ) : (
             <FlatList
-              data={MOCK_ITEMS}
+              data={items}
               keyExtractor={(item) => item.id}
               scrollEnabled={false}
               renderItem={({ item }) => (

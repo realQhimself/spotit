@@ -1,4 +1,4 @@
-import React, { useState, useCallback } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import {
   View,
   Text,
@@ -7,9 +7,13 @@ import {
   FlatList,
   TouchableOpacity,
   RefreshControl,
+  Alert,
 } from 'react-native';
 import type { StackScreenProps } from '@react-navigation/stack';
 import type { RoomsStackParamList } from '../../types/navigation';
+import type Room from '../../database/models/Room';
+import { getAllRooms } from '../../database/helpers/roomHelpers';
+import { createRoom } from '../../database/helpers/roomHelpers';
 import { colors } from '../../theme/colors';
 import { spacing, borderRadius } from '../../theme/spacing';
 import { fontSize, fontWeight } from '../../theme/typography';
@@ -25,30 +29,16 @@ const ROOM_COLORS = [
   '#A78BFA',
 ];
 
-interface MockRoom {
-  id: string;
-  name: string;
-  itemCount: number;
-  colorIndex: number;
-}
-
-const MOCK_ROOMS: MockRoom[] = [
-  { id: '1', name: 'Kitchen', itemCount: 24, colorIndex: 0 },
-  { id: '2', name: 'Living Room', itemCount: 18, colorIndex: 1 },
-  { id: '3', name: 'Bedroom', itemCount: 12, colorIndex: 2 },
-  { id: '4', name: 'Office', itemCount: 31, colorIndex: 3 },
-  { id: '5', name: 'Garage', itemCount: 9, colorIndex: 4 },
-  { id: '6', name: 'Bathroom', itemCount: 7, colorIndex: 5 },
-];
-
 function RoomCard({
   room,
+  index,
   onPress,
 }: {
-  room: MockRoom;
+  room: Room;
+  index: number;
   onPress: () => void;
 }) {
-  const bgColor = ROOM_COLORS[room.colorIndex % ROOM_COLORS.length];
+  const bgColor = ROOM_COLORS[index % ROOM_COLORS.length];
 
   return (
     <TouchableOpacity style={styles.card} activeOpacity={0.7} onPress={onPress}>
@@ -73,17 +63,43 @@ function RoomCard({
 
 export default function RoomListScreen({ navigation }: Props) {
   const [refreshing, setRefreshing] = useState(false);
-  const [rooms] = useState<MockRoom[]>(MOCK_ROOMS);
+  const [rooms, setRooms] = useState<Room[]>([]);
+
+  useEffect(() => {
+    const sub = getAllRooms().subscribe(setRooms);
+    return () => sub.unsubscribe();
+  }, []);
 
   const onRefresh = useCallback(() => {
     setRefreshing(true);
-    // Simulate refresh
-    setTimeout(() => setRefreshing(false), 1000);
+    // Observable auto-updates; brief visual feedback
+    setTimeout(() => setRefreshing(false), 600);
   }, []);
 
-  const renderItem = ({ item }: { item: MockRoom }) => (
+  const handleAddRoom = useCallback(() => {
+    Alert.prompt(
+      'New Room',
+      'Enter a name for the room:',
+      async (name) => {
+        const trimmed = name?.trim();
+        if (!trimmed) return;
+        try {
+          await createRoom(trimmed);
+        } catch (err) {
+          console.error('Failed to create room:', err);
+          Alert.alert('Error', 'Could not create the room. Please try again.');
+        }
+      },
+      'plain-text',
+      '',
+      'default',
+    );
+  }, []);
+
+  const renderItem = ({ item, index }: { item: Room; index: number }) => (
     <RoomCard
       room={item}
+      index={index}
       onPress={() => navigation.navigate('RoomDetail', { roomId: item.id })}
     />
   );
@@ -119,7 +135,7 @@ export default function RoomListScreen({ navigation }: Props) {
       )}
 
       {/* Floating Action Button */}
-      <TouchableOpacity style={styles.fab} activeOpacity={0.8}>
+      <TouchableOpacity style={styles.fab} activeOpacity={0.8} onPress={handleAddRoom}>
         <Text style={styles.fabIcon}>+</Text>
       </TouchableOpacity>
     </SafeAreaView>
