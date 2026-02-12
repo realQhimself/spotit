@@ -53,6 +53,7 @@ export type ScanStackParamList = {
   AreaTypePicker: undefined;
   LayerSetup: { areaType: string };
   RoomPlanScan: { roomId: string };
+  ScanHistory: undefined;
 };
 
 // ---------------------------------------------------------------------------

@@ -1,13 +1,21 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   View,
   Text,
   StyleSheet,
   TouchableOpacity,
   StatusBar,
+  Modal,
+  FlatList,
+  ScrollView,
 } from 'react-native';
 import type { StackScreenProps } from '@react-navigation/stack';
 import type { ScanStackParamList } from '../../types/navigation';
+import type Room from '../../database/models/Room';
+import type Zone from '../../database/models/Zone';
+import { useScanStore } from '../../store/useScanStore';
+import { getAllRooms } from '../../database/helpers/roomHelpers';
+import { getZonesByRoom } from '../../database/helpers/zoneHelpers';
 import { colors } from '../../theme/colors';
 import { spacing, borderRadius } from '../../theme/spacing';
 import { fontSize, fontWeight } from '../../theme/typography';
@@ -24,12 +32,53 @@ const MOCK_BOUNDING_BOXES = [
 export default function CameraScanScreen({ route, navigation }: Props) {
   const { mode } = route.params;
   const [flashOn, setFlashOn] = useState(false);
+  const [showRoomPicker, setShowRoomPicker] = useState(false);
+  const [showZonePicker, setShowZonePicker] = useState(false);
+  const [rooms, setRooms] = useState<Room[]>([]);
+  const [zones, setZones] = useState<Zone[]>([]);
   const detectionCount = MOCK_BOUNDING_BOXES.length;
+
+  const {
+    selectedRoomId,
+    selectedZoneId,
+    setRoom,
+    setZone,
+  } = useScanStore();
 
   const modeLabels: Record<string, string> = {
     quick: 'Quick Scan',
     room: 'Room Scan',
     area: 'Area Scan',
+  };
+
+  // Fetch rooms
+  useEffect(() => {
+    const sub = getAllRooms().subscribe(setRooms);
+    return () => sub.unsubscribe();
+  }, []);
+
+  // Fetch zones when a room is selected
+  useEffect(() => {
+    if (!selectedRoomId) {
+      setZones([]);
+      return;
+    }
+    const sub = getZonesByRoom(selectedRoomId).subscribe(setZones);
+    return () => sub.unsubscribe();
+  }, [selectedRoomId]);
+
+  const selectedRoom = rooms.find((r) => r.id === selectedRoomId);
+  const selectedZone = zones.find((z) => z.id === selectedZoneId);
+
+  const handleRoomSelect = (roomId: string) => {
+    setRoom(roomId);
+    setZone(null); // Clear zone when changing room
+    setShowRoomPicker(false);
+  };
+
+  const handleZoneSelect = (zoneId: string) => {
+    setZone(zoneId);
+    setShowZonePicker(false);
   };
 
   return (
@@ -90,6 +139,39 @@ export default function CameraScanScreen({ route, navigation }: Props) {
         </TouchableOpacity>
       </View>
 
+      {/* Room/Zone Selector Bar */}
+      <View style={styles.selectorBar}>
+        <TouchableOpacity
+          style={styles.selectorButton}
+          onPress={() => setShowRoomPicker(true)}
+          activeOpacity={0.7}
+        >
+          <Text style={styles.selectorIcon}>{'\u{1F3E0}'}</Text>
+          <View style={styles.selectorTextContainer}>
+            <Text style={styles.selectorLabel}>Room</Text>
+            <Text style={styles.selectorValue} numberOfLines={1}>
+              {selectedRoom ? selectedRoom.name : 'Select Room'}
+            </Text>
+          </View>
+        </TouchableOpacity>
+
+        {selectedRoomId && zones.length > 0 && (
+          <TouchableOpacity
+            style={styles.selectorButton}
+            onPress={() => setShowZonePicker(true)}
+            activeOpacity={0.7}
+          >
+            <Text style={styles.selectorIcon}>{'\u{1F4CD}'}</Text>
+            <View style={styles.selectorTextContainer}>
+              <Text style={styles.selectorLabel}>Zone</Text>
+              <Text style={styles.selectorValue} numberOfLines={1}>
+                {selectedZone ? selectedZone.name : 'Select Zone'}
+              </Text>
+            </View>
+          </TouchableOpacity>
+        )}
+      </View>
+
       {/* Bottom Bar */}
       <View style={styles.bottomBar}>
         {/* Controls Row */}
@@ -128,6 +210,132 @@ export default function CameraScanScreen({ route, navigation }: Props) {
           </TouchableOpacity>
         </View>
       </View>
+
+      {/* Room Picker Modal */}
+      <Modal
+        visible={showRoomPicker}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setShowRoomPicker(false)}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalContent}>
+            <View style={styles.modalHeader}>
+              <Text style={styles.modalTitle}>Select Room</Text>
+              <TouchableOpacity
+                onPress={() => setShowRoomPicker(false)}
+                activeOpacity={0.7}
+              >
+                <Text style={styles.modalClose}>{'\u2715'}</Text>
+              </TouchableOpacity>
+            </View>
+
+            <FlatList
+              data={rooms}
+              keyExtractor={(item) => item.id}
+              renderItem={({ item }) => (
+                <TouchableOpacity
+                  style={[
+                    styles.pickerItem,
+                    item.id === selectedRoomId && styles.pickerItemSelected,
+                  ]}
+                  onPress={() => handleRoomSelect(item.id)}
+                  activeOpacity={0.7}
+                >
+                  <Text
+                    style={[
+                      styles.pickerItemText,
+                      item.id === selectedRoomId && styles.pickerItemTextSelected,
+                    ]}
+                  >
+                    {item.name}
+                  </Text>
+                  {item.id === selectedRoomId && (
+                    <Text style={styles.checkmark}>{'\u2713'}</Text>
+                  )}
+                </TouchableOpacity>
+              )}
+              ListEmptyComponent={
+                <View style={styles.emptyPicker}>
+                  <Text style={styles.emptyPickerText}>
+                    No rooms available. Create one first.
+                  </Text>
+                </View>
+              }
+            />
+          </View>
+        </View>
+      </Modal>
+
+      {/* Zone Picker Modal */}
+      <Modal
+        visible={showZonePicker}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setShowZonePicker(false)}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalContent}>
+            <View style={styles.modalHeader}>
+              <Text style={styles.modalTitle}>Select Zone</Text>
+              <TouchableOpacity
+                onPress={() => setShowZonePicker(false)}
+                activeOpacity={0.7}
+              >
+                <Text style={styles.modalClose}>{'\u2715'}</Text>
+              </TouchableOpacity>
+            </View>
+
+            <FlatList
+              data={zones}
+              keyExtractor={(item) => item.id}
+              renderItem={({ item }) => (
+                <TouchableOpacity
+                  style={[
+                    styles.pickerItem,
+                    item.id === selectedZoneId && styles.pickerItemSelected,
+                  ]}
+                  onPress={() => handleZoneSelect(item.id)}
+                  activeOpacity={0.7}
+                >
+                  <View style={styles.zoneItemContent}>
+                    <Text
+                      style={[
+                        styles.pickerItemText,
+                        item.id === selectedZoneId && styles.pickerItemTextSelected,
+                      ]}
+                    >
+                      {item.name}
+                    </Text>
+                    <Text style={styles.zoneTypeText}>{item.zoneType}</Text>
+                  </View>
+                  {item.id === selectedZoneId && (
+                    <Text style={styles.checkmark}>{'\u2713'}</Text>
+                  )}
+                </TouchableOpacity>
+              )}
+              ListEmptyComponent={
+                <View style={styles.emptyPicker}>
+                  <Text style={styles.emptyPickerText}>
+                    No zones in this room.
+                  </Text>
+                </View>
+              }
+            />
+
+            <TouchableOpacity
+              style={styles.clearButton}
+              onPress={() => {
+                setZone(null);
+                setShowZonePicker(false);
+              }}
+              activeOpacity={0.7}
+            >
+              <Text style={styles.clearButtonText}>Clear Zone Selection</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
     </View>
   );
 }
@@ -277,5 +485,134 @@ const styles = StyleSheet.create({
     backgroundColor: '#FFFFFF',
     borderWidth: 2,
     borderColor: colors.border,
+  },
+  // Selector bar
+  selectorBar: {
+    position: 'absolute',
+    top: 116,
+    left: 0,
+    right: 0,
+    flexDirection: 'row',
+    paddingHorizontal: spacing.md,
+    gap: spacing.sm,
+  },
+  selectorButton: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(0,0,0,0.6)',
+    borderRadius: borderRadius.md,
+    paddingHorizontal: spacing.sm,
+    paddingVertical: spacing.sm,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.2)',
+  },
+  selectorIcon: {
+    fontSize: 24,
+    marginRight: spacing.sm,
+  },
+  selectorTextContainer: {
+    flex: 1,
+  },
+  selectorLabel: {
+    fontSize: 10,
+    color: 'rgba(255,255,255,0.6)',
+    fontWeight: fontWeight.medium,
+    marginBottom: 2,
+  },
+  selectorValue: {
+    fontSize: 13,
+    color: '#FFFFFF',
+    fontWeight: fontWeight.semibold,
+  },
+  // Modal styles
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.7)',
+    justifyContent: 'flex-end',
+  },
+  modalContent: {
+    backgroundColor: colors.surface,
+    borderTopLeftRadius: borderRadius.lg,
+    borderTopRightRadius: borderRadius.lg,
+    paddingTop: spacing.md,
+    paddingBottom: 44,
+    maxHeight: '70%',
+  },
+  modalHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: spacing.lg,
+    paddingBottom: spacing.md,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.border,
+  },
+  modalTitle: {
+    fontSize: fontSize.xl,
+    fontWeight: fontWeight.bold,
+    color: colors.text,
+  },
+  modalClose: {
+    fontSize: 20,
+    color: colors.textSecondary,
+    paddingHorizontal: spacing.sm,
+  },
+  pickerItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: spacing.md,
+    paddingHorizontal: spacing.lg,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.border,
+  },
+  pickerItemSelected: {
+    backgroundColor: 'rgba(99,102,241,0.1)',
+  },
+  pickerItemText: {
+    fontSize: fontSize.md,
+    fontWeight: fontWeight.medium,
+    color: colors.text,
+  },
+  pickerItemTextSelected: {
+    color: colors.primary,
+    fontWeight: fontWeight.semibold,
+  },
+  checkmark: {
+    fontSize: 18,
+    color: colors.primary,
+    fontWeight: fontWeight.bold,
+  },
+  zoneItemContent: {
+    flex: 1,
+  },
+  zoneTypeText: {
+    fontSize: fontSize.sm,
+    color: colors.textSecondary,
+    marginTop: 2,
+  },
+  emptyPicker: {
+    paddingVertical: spacing.xl,
+    paddingHorizontal: spacing.lg,
+    alignItems: 'center',
+  },
+  emptyPickerText: {
+    fontSize: fontSize.md,
+    color: colors.textSecondary,
+    textAlign: 'center',
+  },
+  clearButton: {
+    marginHorizontal: spacing.lg,
+    marginTop: spacing.md,
+    paddingVertical: spacing.sm,
+    alignItems: 'center',
+    backgroundColor: colors.border,
+    borderRadius: borderRadius.md,
+  },
+  clearButtonText: {
+    fontSize: fontSize.md,
+    fontWeight: fontWeight.medium,
+    color: colors.textSecondary,
   },
 });

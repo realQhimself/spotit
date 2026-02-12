@@ -16,6 +16,11 @@ import { colors } from '../../theme/colors';
 import { spacing, borderRadius } from '../../theme/spacing';
 import { fontSize, fontWeight } from '../../theme/typography';
 import { createItem } from '../../database/helpers/itemHelpers';
+import {
+  createScan,
+  createScanDetection,
+  completeScan,
+} from '../../database/helpers/scanHelpers';
 import { useScanStore } from '../../store/useScanStore';
 
 type Props = StackScreenProps<ScanStackParamList, 'ScanReview'>;
@@ -30,7 +35,8 @@ interface DetectionItem {
   color: string;
 }
 
-const INITIAL_DETECTIONS: DetectionItem[] = [
+// Mock data for development/testing when no real detections are available
+const MOCK_DETECTIONS: DetectionItem[] = [
   { id: '1', name: 'Coffee Mug', category: 'Kitchenware', confidence: 0.94, room: 'Kitchen', zone: 'Counter', color: '#818CF8' },
   { id: '2', name: 'Laptop', category: 'Electronics', confidence: 0.91, room: 'Office', zone: 'Desk', color: '#34D399' },
   { id: '3', name: 'Phone', category: 'Electronics', confidence: 0.87, room: 'Office', zone: 'Desk', color: '#F59E0B' },
@@ -44,10 +50,32 @@ function getConfidenceColor(confidence: number): string {
   return colors.danger;
 }
 
+function getRandomColor(index: number): string {
+  const palette = ['#818CF8', '#34D399', '#F59E0B', '#F87171', '#60A5FA', '#A78BFA', '#FB923C'];
+  return palette[index % palette.length];
+}
+
 export default function ScanReviewScreen({ route, navigation }: Props) {
   const { scanId } = route.params;
-  const [detections, setDetections] = useState(INITIAL_DETECTIONS);
+  const storeDetections = useScanStore((state) => state.detections);
   const [isSaving, setIsSaving] = useState(false);
+
+  // Convert store detections to UI format with colors
+  // Fall back to mock data if no real detections are available (for development)
+  const [detections, setDetections] = useState<DetectionItem[]>(() => {
+    if (storeDetections.length > 0) {
+      return storeDetections.map((d, idx) => ({
+        id: d.id,
+        name: d.enrichment?.name || d.className,
+        category: d.enrichment?.category || d.className,
+        confidence: d.confidence,
+        room: '',
+        zone: '',
+        color: getRandomColor(idx),
+      }));
+    }
+    return MOCK_DETECTIONS;
+  });
 
   const handleDismiss = (id: string) => {
     setDetections((prev) => prev.filter((d) => d.id !== id));
@@ -60,8 +88,14 @@ export default function ScanReviewScreen({ route, navigation }: Props) {
   };
 
   const handleSaveAll = async () => {
-    const { selectedRoomId, selectedZoneId, clearDetections } =
-      useScanStore.getState();
+    const {
+      selectedRoomId,
+      selectedZoneId,
+      scanMode,
+      capturedPhotoUri,
+      clearDetections,
+      detections: originalDetections,
+    } = useScanStore.getState();
 
     if (!selectedRoomId) {
       Alert.alert(
@@ -80,18 +114,56 @@ export default function ScanReviewScreen({ route, navigation }: Props) {
     setIsSaving(true);
 
     try {
-      const savePromises = detections.map((item) =>
-        createItem({
+      // 1. Create the Scan record
+      const scan = await createScan({
+        roomId: selectedRoomId,
+        zoneId: selectedZoneId,
+        scanType: scanMode || 'quick',
+        photoUri: capturedPhotoUri,
+      });
+
+      // 2. Create Items and ScanDetections for each detection
+      const savePromises = detections.map(async (item) => {
+        // Find the original detection to get bbox info
+        const originalDetection = originalDetections.find((d) => d.id === item.id);
+
+        // Create the Item record
+        const createdItem = await createItem({
           name: item.name,
           category: item.category,
           roomId: selectedRoomId,
           zoneId: selectedZoneId ?? undefined,
           confidence: item.confidence,
-        }),
-      );
+          yoloClass: originalDetection?.className || item.category,
+        });
+
+        // Create the ScanDetection record linking the scan and item
+        // Only if we have an original detection (not mock data)
+        if (originalDetection || originalDetections.length === 0) {
+          await createScanDetection({
+            scanId: scan.id,
+            itemId: createdItem.id,
+            yoloClass: originalDetection?.className || item.category,
+            confidence: item.confidence,
+            bbox: originalDetection?.bbox
+              ? [
+                  originalDetection.bbox.x,
+                  originalDetection.bbox.y,
+                  originalDetection.bbox.width,
+                  originalDetection.bbox.height,
+                ]
+              : [0, 0, 0, 0],
+            status: 'matched',
+          });
+        }
+      });
 
       await Promise.all(savePromises);
 
+      // 3. Mark the scan as completed
+      await completeScan(scan.id, detections.length);
+
+      // 4. Clear detections from the store
       clearDetections();
 
       Alert.alert(
