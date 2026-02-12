@@ -1,15 +1,6 @@
 /**
  * Hook for real-time object detection using YOLOv11 + VisionCamera frame processor.
  *
- * ─── REQUIRES NATIVE MODULES (not yet installed) ───────────────────────
- * Packages needed:
- *   - react-native-vision-camera
- *   - react-native-fast-tflite
- *   - react-native-worklets-core
- *
- * Install them before uncommenting the native imports below.
- * ────────────────────────────────────────────────────────────────────────
- *
  * ## Pipeline overview
  *
  * 1. **Model loading** — useTensorflowModel loads the YOLOv11n TFLite model
@@ -31,18 +22,18 @@
  *    JS thread (for state updates) can access them efficiently.
  */
 
-import { useCallback, useRef, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { SCAN } from '../utils/constants';
 import { COCO_CLASSES } from './cocoClasses';
 import { parseYoloOutput, nonMaxSuppression } from './yoloPostProcess';
 import type { RawDetection } from './yoloPostProcess';
 import type { Detection } from '../types/detection';
 
-// ─── Native imports (uncomment once packages are installed) ─────────────
-// import { useFrameProcessor } from 'react-native-vision-camera';
-// import { useTensorflowModel } from 'react-native-fast-tflite';
-// import { useSharedValue } from 'react-native-reanimated';
-// import { useRunOnJS } from 'react-native-worklets-core';
+// ─── Native imports ─────────────────────────────────────────────────────
+import { useFrameProcessor } from 'react-native-vision-camera';
+import { useTensorflowModel } from 'react-native-fast-tflite';
+import { useSharedValue } from 'react-native-reanimated';
+import { useRunOnJS } from 'react-native-worklets-core';
 
 // ── Types ──────────────────────────────────────────────────────────────
 
@@ -50,7 +41,7 @@ export type ModelState = 'idle' | 'loading' | 'ready' | 'error';
 
 export interface UseObjectDetectionResult {
   /** VisionCamera frame processor — pass this to <Camera frameProcessor={...} /> */
-  frameProcessor: undefined; // Will be FrameProcessor type when native modules available
+  frameProcessor: ReturnType<typeof useFrameProcessor>;
   /** Current detections visible on screen */
   detections: Detection[];
   /** Lifecycle state of the TFLite model */
@@ -82,7 +73,7 @@ function rawToDetection(raw: RawDetection): Detection {
 /**
  * Real-time object detection hook.
  *
- * Usage (once native modules installed):
+ * Usage:
  * ```tsx
  * const { frameProcessor, detections, modelState } = useObjectDetection();
  *
@@ -94,29 +85,23 @@ function rawToDetection(raw: RawDetection): Detection {
  *   />
  * );
  * ```
- *
- * Until native modules are installed this hook returns a stub frameProcessor
- * (undefined) and an empty detections array, so your UI can render safely.
  */
 export function useObjectDetection(): UseObjectDetectionResult {
   const [modelState, setModelState] = useState<ModelState>('idle');
   const [detections, setDetections] = useState<Detection[]>([]);
-  const lastProcessTimeRef = useRef<number>(0);
+  const lastProcessTimeRef = useSharedValue<number>(0);
 
   // ── Model loading ──────────────────────────────────────────────────
-  //
-  // When native modules are available, load the model like this:
-  //
-  // const model = useTensorflowModel(
-  //   require('../../assets/models/yolov11n.tflite'),
-  //   'android-gpu',   // or 'core-ml' on iOS
-  // );
-  //
-  // useEffect(() => {
-  //   if (model.state === 'loading') setModelState('loading');
-  //   if (model.state === 'loaded')  setModelState('ready');
-  //   if (model.state === 'error')   setModelState('error');
-  // }, [model.state]);
+  const model = useTensorflowModel(
+    require('../../assets/models/yolov11n.tflite'),
+    'android-gpu', // or 'core-ml' on iOS
+  );
+
+  useEffect(() => {
+    if (model.state === 'loading') setModelState('loading');
+    if (model.state === 'loaded') setModelState('ready');
+    if (model.state === 'error') setModelState('error');
+  }, [model.state]);
 
   // ── Frame processor ────────────────────────────────────────────────
   //
@@ -126,39 +111,41 @@ export function useObjectDetection(): UseObjectDetectionResult {
   //   3. Post-process the output with parseYoloOutput + nonMaxSuppression.
   //   4. Bridge results back to JS with useRunOnJS.
   //
-  // const updateDetectionsJS = useRunOnJS((rawDets: RawDetection[]) => {
-  //   setDetections(rawDets.map(rawToDetection));
-  // });
-  //
-  // const frameProcessor = useFrameProcessor((frame) => {
-  //   'worklet';
-  //
-  //   // Throttle inference to ~10 fps
-  //   const now = performance.now();
-  //   if (now - lastProcessTimeRef.value < 100) return;
-  //   lastProcessTimeRef.value = now;
-  //
-  //   // Run inference — model.runSync resizes the frame internally
-  //   const output = model.model?.runSync([frame]);
-  //   if (!output || !output[0]) return;
-  //
-  //   // Post-process: shape is [1, 84, 8400]
-  //   const rawOutput = new Float32Array(output[0]);
-  //   const candidates = parseYoloOutput(
-  //     rawOutput,
-  //     80,
-  //     SCAN.CONFIDENCE_THRESHOLD,
-  //   );
-  //   const filtered = nonMaxSuppression(candidates, SCAN.NMS_IOU_THRESHOLD);
-  //
-  //   // Cap detections and send to JS thread
-  //   const capped = filtered.slice(0, SCAN.MAX_DETECTIONS);
-  //   updateDetectionsJS(capped);
-  // }, [model]);
+  const updateDetectionsJS = useRunOnJS((rawDets: RawDetection[]) => {
+    setDetections(rawDets.map(rawToDetection));
+  });
 
-  // ── Stub return (safe to use until native modules installed) ───────
+  const frameProcessor = useFrameProcessor(
+    (frame) => {
+      'worklet';
+
+      // Throttle inference to ~10 fps
+      const now = performance.now();
+      if (now - lastProcessTimeRef.value < 100) return;
+      lastProcessTimeRef.value = now;
+
+      // Run inference — model.runSync resizes the frame internally
+      const output = model.model?.runSync([frame]);
+      if (!output || !output[0]) return;
+
+      // Post-process: shape is [1, 84, 8400]
+      const rawOutput = new Float32Array(output[0]);
+      const candidates = parseYoloOutput(
+        rawOutput,
+        80,
+        SCAN.CONFIDENCE_THRESHOLD,
+      );
+      const filtered = nonMaxSuppression(candidates, SCAN.NMS_IOU_THRESHOLD);
+
+      // Cap detections and send to JS thread
+      const capped = filtered.slice(0, SCAN.MAX_DETECTIONS);
+      updateDetectionsJS(capped);
+    },
+    [model],
+  );
+
   return {
-    frameProcessor: undefined,
+    frameProcessor,
     detections,
     modelState,
   };

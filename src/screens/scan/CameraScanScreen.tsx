@@ -7,7 +7,7 @@ import {
   StatusBar,
   Modal,
   FlatList,
-  ScrollView,
+  ActivityIndicator,
 } from 'react-native';
 import type { StackScreenProps } from '@react-navigation/stack';
 import type { ScanStackParamList } from '../../types/navigation';
@@ -19,15 +19,10 @@ import { getZonesByRoom } from '../../database/helpers/zoneHelpers';
 import { colors } from '../../theme/colors';
 import { spacing, borderRadius } from '../../theme/spacing';
 import { fontSize, fontWeight } from '../../theme/typography';
+import { Camera, useCameraDevice, useCameraPermission } from 'react-native-vision-camera';
+import { useObjectDetection } from '../../ml/useObjectDetection';
 
 type Props = StackScreenProps<ScanStackParamList, 'CameraScan'>;
-
-// Mock bounding boxes to show what detection will look like
-const MOCK_BOUNDING_BOXES = [
-  { id: '1', label: 'cup', confidence: 94, x: 40, y: 180, width: 90, height: 80, color: colors.detection },
-  { id: '2', label: 'laptop', confidence: 91, x: 180, y: 240, width: 140, height: 100, color: '#60A5FA' },
-  { id: '3', label: 'phone', confidence: 87, x: 280, y: 140, width: 60, height: 100, color: '#F59E0B' },
-];
 
 export default function CameraScanScreen({ route, navigation }: Props) {
   const { mode } = route.params;
@@ -36,7 +31,12 @@ export default function CameraScanScreen({ route, navigation }: Props) {
   const [showZonePicker, setShowZonePicker] = useState(false);
   const [rooms, setRooms] = useState<Room[]>([]);
   const [zones, setZones] = useState<Zone[]>([]);
-  const detectionCount = MOCK_BOUNDING_BOXES.length;
+
+  // Camera setup
+  const { hasPermission, requestPermission } = useCameraPermission();
+  const device = useCameraDevice('back');
+  const { frameProcessor, detections, modelState } = useObjectDetection();
+  const detectionCount = detections.length;
 
   const {
     selectedRoomId,
@@ -50,6 +50,13 @@ export default function CameraScanScreen({ route, navigation }: Props) {
     room: 'Room Scan',
     area: 'Area Scan',
   };
+
+  // Request camera permissions on mount
+  useEffect(() => {
+    if (!hasPermission) {
+      requestPermission();
+    }
+  }, [hasPermission, requestPermission]);
 
   // Fetch rooms
   useEffect(() => {
@@ -81,38 +88,111 @@ export default function CameraScanScreen({ route, navigation }: Props) {
     setShowZonePicker(false);
   };
 
+  // Render loading state while model loads
+  if (modelState === 'loading') {
+    return (
+      <View style={styles.container}>
+        <StatusBar barStyle="light-content" />
+        <View style={styles.loadingContainer}>
+          <ActivityIndicator size="large" color={colors.primary} />
+          <Text style={styles.loadingText}>Loading detection model...</Text>
+        </View>
+      </View>
+    );
+  }
+
+  // Render error state if model fails to load
+  if (modelState === 'error') {
+    return (
+      <View style={styles.container}>
+        <StatusBar barStyle="light-content" />
+        <View style={styles.loadingContainer}>
+          <Text style={styles.errorText}>Failed to load detection model</Text>
+          <TouchableOpacity
+            style={styles.retryButton}
+            onPress={() => navigation.goBack()}
+            activeOpacity={0.7}
+          >
+            <Text style={styles.retryButtonText}>Go Back</Text>
+          </TouchableOpacity>
+        </View>
+      </View>
+    );
+  }
+
+  // Render permission request state
+  if (!hasPermission) {
+    return (
+      <View style={styles.container}>
+        <StatusBar barStyle="light-content" />
+        <View style={styles.loadingContainer}>
+          <Text style={styles.errorText}>Camera permission required</Text>
+          <TouchableOpacity
+            style={styles.retryButton}
+            onPress={requestPermission}
+            activeOpacity={0.7}
+          >
+            <Text style={styles.retryButtonText}>Grant Permission</Text>
+          </TouchableOpacity>
+        </View>
+      </View>
+    );
+  }
+
+  // Render device not available state
+  if (!device) {
+    return (
+      <View style={styles.container}>
+        <StatusBar barStyle="light-content" />
+        <View style={styles.loadingContainer}>
+          <Text style={styles.errorText}>Camera not available</Text>
+        </View>
+      </View>
+    );
+  }
+
   return (
     <View style={styles.container}>
       <StatusBar barStyle="light-content" />
 
-      {/* Camera Preview Placeholder */}
-      <View style={styles.cameraPreview}>
-        <Text style={styles.cameraPlaceholder}>Camera Preview</Text>
-        <Text style={styles.cameraMode}>{modeLabels[mode]}</Text>
+      {/* Real Camera View */}
+      <Camera
+        style={StyleSheet.absoluteFill}
+        device={device}
+        isActive={true}
+        torch={flashOn ? 'on' : 'off'}
+        frameProcessor={frameProcessor}
+        pixelFormat="yuv"
+      />
 
-        {/* Mock Bounding Boxes */}
-        {MOCK_BOUNDING_BOXES.map((box) => (
+      {/* Detection Overlays */}
+      {detections.map((detection) => {
+        // Convert normalized bbox to screen coordinates
+        // Note: bbox coordinates from YOLO are in pixels relative to model input size
+        // We may need to scale these based on screen dimensions
+        const { x, y, width, height } = detection.bbox;
+        return (
           <View
-            key={box.id}
+            key={detection.id}
             style={[
               styles.boundingBox,
               {
-                left: box.x,
-                top: box.y,
-                width: box.width,
-                height: box.height,
-                borderColor: box.color,
+                left: x,
+                top: y,
+                width: width,
+                height: height,
+                borderColor: colors.detection,
               },
             ]}
           >
-            <View style={[styles.boxLabel, { backgroundColor: box.color }]}>
+            <View style={[styles.boxLabel, { backgroundColor: colors.detection }]}>
               <Text style={styles.boxLabelText}>
-                {box.label} {box.confidence}%
+                {detection.className} {Math.round(detection.confidence * 100)}%
               </Text>
             </View>
           </View>
-        ))}
-      </View>
+        );
+      })}
 
       {/* Top Bar */}
       <View style={styles.topBar}>
@@ -345,23 +425,37 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: '#000000',
   },
-  cameraPreview: {
+  loadingContainer: {
     flex: 1,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: '#1A1A2E',
+    backgroundColor: '#000000',
+    paddingHorizontal: spacing.xl,
   },
-  cameraPlaceholder: {
-    fontSize: fontSize.xl,
-    color: 'rgba(255,255,255,0.5)',
-    fontWeight: fontWeight.semibold,
-  },
-  cameraMode: {
+  loadingText: {
     fontSize: fontSize.md,
-    color: 'rgba(255,255,255,0.3)',
-    marginTop: spacing.sm,
+    color: colors.textSecondary,
+    marginTop: spacing.md,
+    textAlign: 'center',
   },
-  // Mock bounding boxes
+  errorText: {
+    fontSize: fontSize.lg,
+    color: colors.text,
+    textAlign: 'center',
+    marginBottom: spacing.lg,
+  },
+  retryButton: {
+    backgroundColor: colors.primary,
+    paddingHorizontal: spacing.xl,
+    paddingVertical: spacing.md,
+    borderRadius: borderRadius.md,
+  },
+  retryButtonText: {
+    fontSize: fontSize.md,
+    fontWeight: fontWeight.semibold,
+    color: '#FFFFFF',
+  },
+  // Detection bounding boxes
   boundingBox: {
     position: 'absolute',
     borderWidth: 2,

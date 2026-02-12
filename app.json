@@ -35,7 +35,14 @@
       ]
     },
     "plugins": [
-      "expo-secure-store"
+      "expo-secure-store",
+      [
+        "react-native-vision-camera",
+        {
+          "cameraPermissionText": "SpotIt needs camera access to scan and identify items in your rooms.",
+          "enableMicrophonePermission": false
+        }
+      ]
     ],
     "web": {
       "bundler": "metro",
