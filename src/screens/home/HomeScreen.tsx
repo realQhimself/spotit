@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import {
   View,
   Text,
@@ -8,16 +8,19 @@ import {
   StyleSheet,
   TouchableOpacity,
   SafeAreaView,
+  Modal,
 } from 'react-native';
+import { CommonActions } from '@react-navigation/native';
 import type { StackScreenProps } from '@react-navigation/stack';
 import type { HomeStackParamList } from '../../types/navigation';
 import { colors } from '../../theme/colors';
 import { spacing, borderRadius } from '../../theme/spacing';
 import { fontSize, fontWeight } from '../../theme/typography';
+import { showAlert } from '../../utils/alert';
 import database from '../../database';
 import type Room from '../../database/models/Room';
 import type Item from '../../database/models/Item';
-import { getAllRooms } from '../../database/helpers/roomHelpers';
+import { getAllRooms, createRoom } from '../../database/helpers/roomHelpers';
 import { getRecentItems, getItemCount } from '../../database/helpers/itemHelpers';
 
 type Props = StackScreenProps<HomeStackParamList, 'HomeScreen'>;
@@ -59,6 +62,26 @@ export default function HomeScreen({ navigation }: Props) {
   const [recentItems, setRecentItems] = useState<Item[]>([]);
   const [itemCount, setItemCount] = useState(0);
   const [scanCount, setScanCount] = useState(0);
+  const [showAddRoomModal, setShowAddRoomModal] = useState(false);
+  const [newRoomName, setNewRoomName] = useState('');
+
+  const handleAddRoom = useCallback(() => {
+    setNewRoomName('');
+    setShowAddRoomModal(true);
+  }, []);
+
+  const handleConfirmAddRoom = useCallback(async () => {
+    const trimmed = newRoomName.trim();
+    if (!trimmed) return;
+    setShowAddRoomModal(false);
+    setNewRoomName('');
+    try {
+      await createRoom(trimmed);
+    } catch (err) {
+      console.error('Failed to create room:', err);
+      showAlert('Error', 'Could not create the room. Please try again.');
+    }
+  }, [newRoomName]);
 
   // Subscribe to rooms observable
   useEffect(() => {
@@ -146,7 +169,7 @@ export default function HomeScreen({ navigation }: Props) {
         {/* Recent Items */}
         <View style={styles.sectionHeader}>
           <Text style={styles.sectionTitle}>Recent Items</Text>
-          <TouchableOpacity>
+          <TouchableOpacity onPress={() => navigation.dispatch(CommonActions.navigate({ name: 'Search' }))}>
             <Text style={styles.seeAll}>See All</Text>
           </TouchableOpacity>
         </View>
@@ -181,7 +204,7 @@ export default function HomeScreen({ navigation }: Props) {
         {/* Your Rooms */}
         <View style={styles.sectionHeader}>
           <Text style={styles.sectionTitle}>Your Rooms</Text>
-          <TouchableOpacity>
+          <TouchableOpacity onPress={() => navigation.dispatch(CommonActions.navigate({ name: 'Rooms' }))}>
             <Text style={styles.seeAll}>See All</Text>
           </TouchableOpacity>
         </View>
@@ -192,13 +215,17 @@ export default function HomeScreen({ navigation }: Props) {
           contentContainerStyle={styles.roomsScroll}
         >
           {rooms.length === 0 ? (
-            <View style={[styles.roomCard, { backgroundColor: ROOM_COLORS[0] }]}>
+            <TouchableOpacity
+              style={[styles.roomCard, { backgroundColor: ROOM_COLORS[0] }]}
+              activeOpacity={0.7}
+              onPress={handleAddRoom}
+            >
               <View style={styles.roomIcon}>
                 <Text style={{ fontSize: 28 }}>{'\u2795'}</Text>
               </View>
               <Text style={styles.roomName}>Add a Room</Text>
               <Text style={styles.roomItemCount}>Get started</Text>
-            </View>
+            </TouchableOpacity>
           ) : (
             rooms.map((room, index) => (
               <TouchableOpacity
@@ -221,6 +248,38 @@ export default function HomeScreen({ navigation }: Props) {
 
         <View style={{ height: spacing.xxl }} />
       </ScrollView>
+
+      {/* Add Room Modal */}
+      {showAddRoomModal && <Modal visible transparent animationType="fade" onRequestClose={() => setShowAddRoomModal(false)}>
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalContent}>
+            <Text style={styles.modalTitle}>New Room</Text>
+            <Text style={styles.modalSubtitle}>Enter a name for the room:</Text>
+            <TextInput
+              style={styles.modalInput}
+              value={newRoomName}
+              onChangeText={setNewRoomName}
+              placeholder="e.g. Living Room"
+              placeholderTextColor={colors.textTertiary}
+              autoFocus
+              onSubmitEditing={handleConfirmAddRoom}
+            />
+            <View style={styles.modalButtons}>
+              <TouchableOpacity style={styles.modalCancelButton} onPress={() => setShowAddRoomModal(false)} activeOpacity={0.7}>
+                <Text style={styles.modalCancelText}>Cancel</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.modalConfirmButton, !newRoomName.trim() && styles.modalButtonDisabled]}
+                onPress={handleConfirmAddRoom}
+                activeOpacity={0.7}
+                disabled={!newRoomName.trim()}
+              >
+                <Text style={styles.modalConfirmText}>Create</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>}
     </SafeAreaView>
   );
 }
@@ -410,5 +469,75 @@ const styles = StyleSheet.create({
     fontSize: fontSize.sm,
     color: colors.textSecondary,
     marginTop: 4,
+  },
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.5)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingHorizontal: spacing.xl,
+  },
+  modalContent: {
+    backgroundColor: colors.surface,
+    borderRadius: borderRadius.lg,
+    padding: spacing.lg,
+    width: '100%',
+    maxWidth: 400,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.15,
+    shadowRadius: 24,
+    elevation: 8,
+  },
+  modalTitle: {
+    fontSize: fontSize.xl,
+    fontWeight: fontWeight.bold,
+    color: colors.text,
+    marginBottom: spacing.xs,
+  },
+  modalSubtitle: {
+    fontSize: fontSize.md,
+    color: colors.textSecondary,
+    marginBottom: spacing.md,
+  },
+  modalInput: {
+    backgroundColor: colors.background,
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: borderRadius.md,
+    paddingHorizontal: spacing.md,
+    paddingVertical: 12,
+    fontSize: fontSize.md,
+    color: colors.text,
+    marginBottom: spacing.lg,
+  },
+  modalButtons: {
+    flexDirection: 'row',
+    justifyContent: 'flex-end',
+    gap: spacing.sm,
+  },
+  modalCancelButton: {
+    paddingHorizontal: spacing.lg,
+    paddingVertical: 10,
+    borderRadius: borderRadius.md,
+  },
+  modalCancelText: {
+    fontSize: fontSize.md,
+    fontWeight: fontWeight.medium,
+    color: colors.textSecondary,
+  },
+  modalConfirmButton: {
+    paddingHorizontal: spacing.lg,
+    paddingVertical: 10,
+    borderRadius: borderRadius.md,
+    backgroundColor: colors.primary,
+  },
+  modalButtonDisabled: {
+    opacity: 0.5,
+  },
+  modalConfirmText: {
+    fontSize: fontSize.md,
+    fontWeight: fontWeight.semibold,
+    color: '#FFFFFF',
   },
 });

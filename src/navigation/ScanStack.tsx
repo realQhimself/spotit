@@ -6,6 +6,7 @@ import CameraScanScreen from '../screens/scan/CameraScanScreen';
 import ScanReviewScreen from '../screens/scan/ScanReviewScreen';
 import AreaTypePickerScreen from '../screens/scan/AreaTypePickerScreen';
 import LayerSetupScreen from '../screens/scan/LayerSetupScreen';
+import ScanHistoryScreen from '../screens/scan/ScanHistoryScreen';
 
 const Stack = createStackNavigator<ScanStackParamList>();
 
@@ -43,6 +44,11 @@ export default function ScanStack() {
         name="LayerSetup"
         component={LayerSetupScreen}
         options={{ title: 'Layer Setup' }}
+      />
+      <Stack.Screen
+        name="ScanHistory"
+        component={ScanHistoryScreen}
+        options={{ title: 'Scan History' }}
       />
     </Stack.Navigator>
   );

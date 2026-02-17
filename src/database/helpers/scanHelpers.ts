@@ -2,6 +2,8 @@
  * Scan CRUD helper functions using WatermelonDB.
  */
 
+import { Q } from '@nozbe/watermelondb';
+import type { Observable } from 'rxjs';
 import database, { Scan, ScanDetection } from '../index';
 
 const scansCollection = database.get<Scan>('scans');
@@ -30,12 +32,6 @@ export interface CreateScanDetectionData {
 
 // ── Create ─────────────────────────────────────────────────────────────
 
-/**
- * Create a new scan record in the database.
- *
- * @param data - Scan fields. `roomId` and `scanType` are required.
- * @returns The newly created Scan model instance.
- */
 export async function createScan(data: CreateScanData): Promise<Scan> {
   return database.write(async () => {
     return scansCollection.create((scan) => {
@@ -51,12 +47,6 @@ export async function createScan(data: CreateScanData): Promise<Scan> {
   });
 }
 
-/**
- * Create a new scan detection record and link it to a scan and optionally an item.
- *
- * @param data - Scan detection fields.
- * @returns The newly created ScanDetection model instance.
- */
 export async function createScanDetection(
   data: CreateScanDetectionData,
 ): Promise<ScanDetection> {
@@ -73,14 +63,40 @@ export async function createScanDetection(
   });
 }
 
+// ── Read ──────────────────────────────────────────────────────────────
+
+export function getRecentScans(limit = 10): Observable<Scan[]> {
+  return scansCollection
+    .query(Q.sortBy('created_at', Q.desc), Q.take(limit))
+    .observe();
+}
+
+export function getScansByRoom(roomId: string): Observable<Scan[]> {
+  return scansCollection
+    .query(Q.where('room_id', roomId), Q.sortBy('created_at', Q.desc))
+    .observe();
+}
+
+export async function getScanById(scanId: string): Promise<Scan> {
+  return scansCollection.find(scanId);
+}
+
+export function getDetectionsByScan(scanId: string): Observable<ScanDetection[]> {
+  return scanDetectionsCollection
+    .query(Q.where('scan_id', scanId))
+    .observe();
+}
+
+export async function getScanCount(): Promise<number> {
+  return scansCollection.query().fetchCount();
+}
+
+export async function getScanCountByRoom(roomId: string): Promise<number> {
+  return scansCollection.query(Q.where('room_id', roomId)).fetchCount();
+}
+
 // ── Update ─────────────────────────────────────────────────────────────
 
-/**
- * Mark a scan as completed with the final detection count.
- *
- * @param scanId - WatermelonDB record ID of the scan.
- * @param detectionCount - Number of detections that were saved.
- */
 export async function completeScan(
   scanId: string,
   detectionCount: number,
@@ -89,24 +105,46 @@ export async function completeScan(
   await scan.completeScan(detectionCount);
 }
 
-/**
- * Mark a scan as failed.
- *
- * @param scanId - WatermelonDB record ID of the scan.
- */
 export async function failScan(scanId: string): Promise<void> {
   const scan = await scansCollection.find(scanId);
   await scan.failScan();
 }
 
+export async function updateScan(
+  scanId: string,
+  updates: Partial<Pick<Scan, 'photoUri' | 'photoCloudUrl' | 'annotatedPhotoUri' | 'status'>>,
+): Promise<void> {
+  await database.write(async () => {
+    const scan = await scansCollection.find(scanId);
+    await scan.update((s) => {
+      if (updates.photoUri !== undefined) s.photoUri = updates.photoUri;
+      if (updates.photoCloudUrl !== undefined) s.photoCloudUrl = updates.photoCloudUrl;
+      if (updates.annotatedPhotoUri !== undefined) s.annotatedPhotoUri = updates.annotatedPhotoUri;
+      if (updates.status !== undefined) s.status = updates.status;
+    });
+  });
+}
+
+export async function linkDetectionToItem(detectionId: string, itemId: string): Promise<void> {
+  const detection = await scanDetectionsCollection.find(detectionId);
+  await detection.linkToItem(itemId);
+}
+
+export async function updateDetectionCloudAi(detectionId: string, result: string): Promise<void> {
+  const detection = await scanDetectionsCollection.find(detectionId);
+  await detection.updateCloudAiResult(result);
+}
+
 // ── Delete ─────────────────────────────────────────────────────────────
 
-/**
- * Delete a scan and all its associated detections.
- *
- * @param scanId - WatermelonDB record ID of the scan to delete.
- */
 export async function deleteScan(scanId: string): Promise<void> {
   const scan = await scansCollection.find(scanId);
   await scan.markAsDeleted();
+}
+
+export async function deleteScanDetection(detectionId: string): Promise<void> {
+  const detection = await scanDetectionsCollection.find(detectionId);
+  await database.write(async () => {
+    await detection.markAsDeleted();
+  });
 }

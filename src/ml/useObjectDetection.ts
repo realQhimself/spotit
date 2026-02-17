@@ -22,7 +22,7 @@
  *    JS thread (for state updates) can access them efficiently.
  */
 
-import { useEffect, useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { SCAN } from '../utils/constants';
 import { COCO_CLASSES } from './cocoClasses';
 import { parseYoloOutput, nonMaxSuppression } from './yoloPostProcess';
@@ -46,6 +46,12 @@ export interface UseObjectDetectionResult {
   detections: Detection[];
   /** Lifecycle state of the TFLite model */
   modelState: ModelState;
+  /** Web-only: ref to attach to a <video> element */
+  videoRef?: React.RefObject<HTMLVideoElement>;
+  /** Web-only: start the detection loop */
+  startDetection?: () => void;
+  /** Web-only: stop the detection loop */
+  stopDetection?: () => void;
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────
@@ -111,6 +117,7 @@ export function useObjectDetection(): UseObjectDetectionResult {
   //   3. Post-process the output with parseYoloOutput + nonMaxSuppression.
   //   4. Bridge results back to JS with useRunOnJS.
   //
+  // @ts-expect-error useRunOnJS signature varies between worklets-core versions
   const updateDetectionsJS = useRunOnJS((rawDets: RawDetection[]) => {
     setDetections(rawDets.map(rawToDetection));
   });
@@ -125,10 +132,12 @@ export function useObjectDetection(): UseObjectDetectionResult {
       lastProcessTimeRef.value = now;
 
       // Run inference — model.runSync resizes the frame internally
+      // @ts-expect-error Frame type mismatch between vision-camera and fast-tflite versions
       const output = model.model?.runSync([frame]);
       if (!output || !output[0]) return;
 
       // Post-process: shape is [1, 84, 8400]
+      // @ts-expect-error TypedArray from TFLite is compatible with Float32Array constructor
       const rawOutput = new Float32Array(output[0]);
       const candidates = parseYoloOutput(
         rawOutput,

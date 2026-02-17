@@ -7,8 +7,8 @@ import {
   ScrollView,
   TouchableOpacity,
   ActivityIndicator,
-  Alert,
 } from 'react-native';
+import { showAlert } from '../../utils/alert';
 import { useRoute, useNavigation } from '@react-navigation/native';
 import type { RouteProp } from '@react-navigation/native';
 import type { RoomsStackParamList } from '../../types/navigation';
@@ -113,7 +113,7 @@ export default function ItemDetailScreen() {
   }, [itemId]);
 
   const handleDelete = useCallback(() => {
-    Alert.alert(
+    showAlert(
       'Delete Item',
       'Are you sure you want to delete this item? This cannot be undone.',
       [
@@ -259,7 +259,9 @@ export default function ItemDetailScreen() {
 
         {/* Action Buttons */}
         <View style={styles.actionsRow}>
-          <TouchableOpacity style={styles.editButton} activeOpacity={0.7}>
+          <TouchableOpacity style={styles.editButton} activeOpacity={0.7} onPress={() => {
+            showAlert('Coming Soon', 'Item editing will be available in a future update.');
+          }}>
             <Text style={styles.editButtonText}>Edit Item</Text>
           </TouchableOpacity>
           <TouchableOpacity style={styles.deleteButton} activeOpacity={0.7} onPress={handleDelete}>

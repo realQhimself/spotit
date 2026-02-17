@@ -2,12 +2,13 @@ import React, { useState, useEffect, useCallback } from 'react';
 import {
   View,
   Text,
+  TextInput,
   StyleSheet,
   SafeAreaView,
   FlatList,
   TouchableOpacity,
   RefreshControl,
-  Alert,
+  Modal,
 } from 'react-native';
 import type { StackScreenProps } from '@react-navigation/stack';
 import type { RoomsStackParamList } from '../../types/navigation';
@@ -17,6 +18,7 @@ import { createRoom } from '../../database/helpers/roomHelpers';
 import { colors } from '../../theme/colors';
 import { spacing, borderRadius } from '../../theme/spacing';
 import { fontSize, fontWeight } from '../../theme/typography';
+import { showAlert } from '../../utils/alert';
 
 type Props = StackScreenProps<RoomsStackParamList, 'RoomList'>;
 
@@ -64,6 +66,8 @@ function RoomCard({
 export default function RoomListScreen({ navigation }: Props) {
   const [refreshing, setRefreshing] = useState(false);
   const [rooms, setRooms] = useState<Room[]>([]);
+  const [showAddModal, setShowAddModal] = useState(false);
+  const [newRoomName, setNewRoomName] = useState('');
 
   useEffect(() => {
     const sub = getAllRooms().subscribe(setRooms);
@@ -72,29 +76,26 @@ export default function RoomListScreen({ navigation }: Props) {
 
   const onRefresh = useCallback(() => {
     setRefreshing(true);
-    // Observable auto-updates; brief visual feedback
     setTimeout(() => setRefreshing(false), 600);
   }, []);
 
   const handleAddRoom = useCallback(() => {
-    Alert.prompt(
-      'New Room',
-      'Enter a name for the room:',
-      async (name) => {
-        const trimmed = name?.trim();
-        if (!trimmed) return;
-        try {
-          await createRoom(trimmed);
-        } catch (err) {
-          console.error('Failed to create room:', err);
-          Alert.alert('Error', 'Could not create the room. Please try again.');
-        }
-      },
-      'plain-text',
-      '',
-      'default',
-    );
+    setNewRoomName('');
+    setShowAddModal(true);
   }, []);
+
+  const handleConfirmAdd = useCallback(async () => {
+    const trimmed = newRoomName.trim();
+    if (!trimmed) return;
+    setShowAddModal(false);
+    setNewRoomName('');
+    try {
+      await createRoom(trimmed);
+    } catch (err) {
+      console.error('Failed to create room:', err);
+      showAlert('Error', 'Could not create the room. Please try again.');
+    }
+  }, [newRoomName]);
 
   const renderItem = ({ item, index }: { item: Room; index: number }) => (
     <RoomCard
@@ -138,6 +139,42 @@ export default function RoomListScreen({ navigation }: Props) {
       <TouchableOpacity style={styles.fab} activeOpacity={0.8} onPress={handleAddRoom}>
         <Text style={styles.fabIcon}>+</Text>
       </TouchableOpacity>
+
+      {/* Add Room Modal */}
+      {showAddModal && <Modal visible transparent animationType="fade" onRequestClose={() => setShowAddModal(false)}>
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalContent}>
+            <Text style={styles.modalTitle}>New Room</Text>
+            <Text style={styles.modalSubtitle}>Enter a name for the room:</Text>
+            <TextInput
+              style={styles.modalInput}
+              value={newRoomName}
+              onChangeText={setNewRoomName}
+              placeholder="e.g. Living Room"
+              placeholderTextColor={colors.textTertiary}
+              autoFocus
+              onSubmitEditing={handleConfirmAdd}
+            />
+            <View style={styles.modalButtons}>
+              <TouchableOpacity
+                style={styles.modalCancelButton}
+                onPress={() => setShowAddModal(false)}
+                activeOpacity={0.7}
+              >
+                <Text style={styles.modalCancelText}>Cancel</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.modalConfirmButton, !newRoomName.trim() && styles.modalButtonDisabled]}
+                onPress={handleConfirmAdd}
+                activeOpacity={0.7}
+                disabled={!newRoomName.trim()}
+              >
+                <Text style={styles.modalConfirmText}>Create</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>}
     </SafeAreaView>
   );
 }
@@ -239,5 +276,75 @@ const styles = StyleSheet.create({
     color: '#FFFFFF',
     fontWeight: fontWeight.regular,
     lineHeight: 30,
+  },
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.5)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingHorizontal: spacing.xl,
+  },
+  modalContent: {
+    backgroundColor: colors.surface,
+    borderRadius: borderRadius.lg,
+    padding: spacing.lg,
+    width: '100%',
+    maxWidth: 400,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.15,
+    shadowRadius: 24,
+    elevation: 8,
+  },
+  modalTitle: {
+    fontSize: fontSize.xl,
+    fontWeight: fontWeight.bold,
+    color: colors.text,
+    marginBottom: spacing.xs,
+  },
+  modalSubtitle: {
+    fontSize: fontSize.md,
+    color: colors.textSecondary,
+    marginBottom: spacing.md,
+  },
+  modalInput: {
+    backgroundColor: colors.background,
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: borderRadius.md,
+    paddingHorizontal: spacing.md,
+    paddingVertical: 12,
+    fontSize: fontSize.md,
+    color: colors.text,
+    marginBottom: spacing.lg,
+  },
+  modalButtons: {
+    flexDirection: 'row',
+    justifyContent: 'flex-end',
+    gap: spacing.sm,
+  },
+  modalCancelButton: {
+    paddingHorizontal: spacing.lg,
+    paddingVertical: 10,
+    borderRadius: borderRadius.md,
+  },
+  modalCancelText: {
+    fontSize: fontSize.md,
+    fontWeight: fontWeight.medium,
+    color: colors.textSecondary,
+  },
+  modalConfirmButton: {
+    paddingHorizontal: spacing.lg,
+    paddingVertical: 10,
+    borderRadius: borderRadius.md,
+    backgroundColor: colors.primary,
+  },
+  modalButtonDisabled: {
+    opacity: 0.5,
+  },
+  modalConfirmText: {
+    fontSize: fontSize.md,
+    fontWeight: fontWeight.semibold,
+    color: '#FFFFFF',
   },
 });

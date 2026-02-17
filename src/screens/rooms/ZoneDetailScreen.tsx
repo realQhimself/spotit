@@ -7,6 +7,7 @@ import {
   ScrollView,
   TouchableOpacity,
 } from 'react-native';
+import { CommonActions } from '@react-navigation/native';
 import type { StackScreenProps } from '@react-navigation/stack';
 import type { RoomsStackParamList } from '../../types/navigation';
 import type Zone from '../../database/models/Zone';
@@ -16,6 +17,7 @@ import { getItemsByZone } from '../../database/helpers/itemHelpers';
 import { colors } from '../../theme/colors';
 import { spacing, borderRadius } from '../../theme/spacing';
 import { fontSize, fontWeight } from '../../theme/typography';
+import { showAlert } from '../../utils/alert';
 
 type Props = StackScreenProps<RoomsStackParamList, 'ZoneDetail'>;
 
@@ -92,7 +94,7 @@ function ExpandableLayer({ layerGroup }: { layerGroup: LayerGroup }) {
   );
 }
 
-export default function ZoneDetailScreen({ route }: Props) {
+export default function ZoneDetailScreen({ route, navigation }: Props) {
   const { zoneId } = route.params;
 
   const [zone, setZone] = useState<Zone | null>(null);
@@ -156,7 +158,14 @@ export default function ZoneDetailScreen({ route }: Props) {
 
       {/* Bottom Scan Button */}
       <View style={styles.bottomBar}>
-        <TouchableOpacity style={styles.scanButton} activeOpacity={0.8}>
+        <TouchableOpacity style={styles.scanButton} activeOpacity={0.8} onPress={() => {
+          navigation.dispatch(
+            CommonActions.navigate({
+              name: 'Scan',
+              params: { screen: 'CameraScan', params: { mode: 'area' } },
+            })
+          );
+        }}>
           <Text style={styles.scanButtonIcon}>{'\u{1F4F7}'}</Text>
           <Text style={styles.scanButtonText}>Scan this Zone</Text>
         </TouchableOpacity>

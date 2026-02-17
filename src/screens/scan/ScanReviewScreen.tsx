@@ -7,9 +7,9 @@ import {
   ScrollView,
   TextInput,
   TouchableOpacity,
-  Alert,
   ActivityIndicator,
 } from 'react-native';
+import { showAlert } from '../../utils/alert';
 import type { StackScreenProps } from '@react-navigation/stack';
 import type { ScanStackParamList } from '../../types/navigation';
 import { colors } from '../../theme/colors';
@@ -98,7 +98,7 @@ export default function ScanReviewScreen({ route, navigation }: Props) {
     } = useScanStore.getState();
 
     if (!selectedRoomId) {
-      Alert.alert(
+      showAlert(
         'No Room Selected',
         'Please select a room before saving items. Go back and choose a room from the scan settings.',
         [{ text: 'OK' }],
@@ -107,7 +107,7 @@ export default function ScanReviewScreen({ route, navigation }: Props) {
     }
 
     if (detections.length === 0) {
-      Alert.alert('No Items', 'There are no items to save.');
+      showAlert('No Items', 'There are no items to save.');
       return;
     }
 
@@ -166,14 +166,14 @@ export default function ScanReviewScreen({ route, navigation }: Props) {
       // 4. Clear detections from the store
       clearDetections();
 
-      Alert.alert(
+      showAlert(
         'Items Saved',
         `Successfully saved ${detections.length} item${detections.length === 1 ? '' : 's'}.`,
         [{ text: 'OK', onPress: () => navigation.popToTop() }],
       );
     } catch (error) {
       console.error('Failed to save items:', error);
-      Alert.alert(
+      showAlert(
         'Save Failed',
         'Something went wrong while saving items. Please try again.',
         [{ text: 'OK' }],

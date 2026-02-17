@@ -8,6 +8,7 @@ import {
   FlatList,
   TouchableOpacity,
 } from 'react-native';
+import { CommonActions } from '@react-navigation/native';
 import type { StackScreenProps } from '@react-navigation/stack';
 import type { RoomsStackParamList } from '../../types/navigation';
 import type Room from '../../database/models/Room';
@@ -19,6 +20,7 @@ import { getItemsByRoom } from '../../database/helpers/itemHelpers';
 import { colors } from '../../theme/colors';
 import { spacing, borderRadius } from '../../theme/spacing';
 import { fontSize, fontWeight } from '../../theme/typography';
+import { showAlert } from '../../utils/alert';
 
 type Props = StackScreenProps<RoomsStackParamList, 'RoomDetail'>;
 
@@ -191,7 +193,14 @@ export default function RoomDetailScreen({ route, navigation }: Props) {
       </ScrollView>
 
       {/* FAB to scan this room */}
-      <TouchableOpacity style={styles.fab} activeOpacity={0.8}>
+      <TouchableOpacity style={styles.fab} activeOpacity={0.8} onPress={() => {
+        navigation.dispatch(
+          CommonActions.navigate({
+            name: 'Scan',
+            params: { screen: 'CameraScan', params: { mode: 'room' } },
+          })
+        );
+      }}>
         <Text style={styles.fabText}>{'\u{1F4F7}'}</Text>
       </TouchableOpacity>
     </SafeAreaView>

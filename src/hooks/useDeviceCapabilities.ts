@@ -62,7 +62,7 @@ export function useDeviceCapabilities(): DeviceCapabilities {
   return {
     // Assume camera is available on physical devices; simulators may not have one.
     // A more robust check: use Camera.getAvailableCameraDevices() from vision-camera.
-    hasCamera: Platform.OS === 'ios' || Platform.OS === 'android',
+    hasCamera: Platform.OS === 'ios' || Platform.OS === 'android' || Platform.OS === 'web',
     hasLiDAR: detectLiDAR(),
     isOnline,
   };

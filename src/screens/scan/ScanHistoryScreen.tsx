@@ -7,8 +7,8 @@ import {
   FlatList,
   TouchableOpacity,
   Image,
-  Alert,
 } from 'react-native';
+import { showAlert } from '../../utils/alert';
 import type { StackScreenProps } from '@react-navigation/stack';
 import type { ScanStackParamList } from '../../types/navigation';
 import type Scan from '../../database/models/Scan';
@@ -177,7 +177,7 @@ export default function ScanHistoryScreen({ navigation }: Props) {
       // Navigate to scan review or detail screen
       navigation.navigate('ScanReview', { scanId: scan.id });
     } else {
-      Alert.alert(
+      showAlert(
         'Scan Not Complete',
         'This scan is still processing or has failed.',
         [{ text: 'OK' }],
