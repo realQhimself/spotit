@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   View,
   Text,
@@ -7,7 +7,6 @@ import {
   StatusBar,
   Modal,
   FlatList,
-  ActivityIndicator,
 } from 'react-native';
 import type { StackScreenProps } from '@react-navigation/stack';
 import type { ScanStackParamList } from '../../types/navigation';
@@ -20,7 +19,6 @@ import { colors } from '../../theme/colors';
 import { spacing, borderRadius } from '../../theme/spacing';
 import { fontSize, fontWeight } from '../../theme/typography';
 import { Camera, useCameraDevice, useCameraPermission } from 'react-native-vision-camera';
-import { useObjectDetection } from '../../ml/useObjectDetection';
 
 type Props = StackScreenProps<ScanStackParamList, 'CameraScan'>;
 
@@ -31,12 +29,12 @@ export default function CameraScanScreen({ route, navigation }: Props) {
   const [showZonePicker, setShowZonePicker] = useState(false);
   const [rooms, setRooms] = useState<Room[]>([]);
   const [zones, setZones] = useState<Zone[]>([]);
+  const [isCapturing, setIsCapturing] = useState(false);
 
-  // Camera setup
+  // Camera setup — photo only, no frame processor
   const { hasPermission, requestPermission } = useCameraPermission();
   const device = useCameraDevice('back');
-  const { frameProcessor, detections, modelState } = useObjectDetection();
-  const detectionCount = detections.length;
+  const cameraRef = useRef<Camera>(null);
 
   const {
     selectedRoomId,
@@ -88,37 +86,22 @@ export default function CameraScanScreen({ route, navigation }: Props) {
     setShowZonePicker(false);
   };
 
-  // Render loading state while model loads
-  if (modelState === 'loading') {
-    return (
-      <View style={styles.container}>
-        <StatusBar barStyle="light-content" />
-        <View style={styles.loadingContainer}>
-          <ActivityIndicator size="large" color={colors.primary} />
-          <Text style={styles.loadingText}>Loading detection model...</Text>
-        </View>
-      </View>
-    );
-  }
-
-  // Render error state if model fails to load
-  if (modelState === 'error') {
-    return (
-      <View style={styles.container}>
-        <StatusBar barStyle="light-content" />
-        <View style={styles.loadingContainer}>
-          <Text style={styles.errorText}>Failed to load detection model</Text>
-          <TouchableOpacity
-            style={styles.retryButton}
-            onPress={() => navigation.goBack()}
-            activeOpacity={0.7}
-          >
-            <Text style={styles.retryButtonText}>Go Back</Text>
-          </TouchableOpacity>
-        </View>
-      </View>
-    );
-  }
+  const handleCapture = async () => {
+    if (!cameraRef.current || isCapturing) return;
+    setIsCapturing(true);
+    try {
+      const photo = await cameraRef.current.takePhoto({
+        flash: flashOn ? 'on' : 'off',
+      });
+      // Save the photo URI to the scan store
+      useScanStore.getState().setCapturedPhoto(`file://${photo.path}`);
+      navigation.navigate('ScanReview', { scanId: `scan-${Date.now()}` });
+    } catch (error) {
+      console.error('Failed to capture photo:', error);
+    } finally {
+      setIsCapturing(false);
+    }
+  };
 
   // Render permission request state
   if (!hasPermission) {
@@ -155,44 +138,15 @@ export default function CameraScanScreen({ route, navigation }: Props) {
     <View style={styles.container}>
       <StatusBar barStyle="light-content" />
 
-      {/* Real Camera View */}
+      {/* Camera View — photo mode only, no frame processor */}
       <Camera
+        ref={cameraRef}
         style={StyleSheet.absoluteFill}
         device={device}
         isActive={true}
         torch={flashOn ? 'on' : 'off'}
-        frameProcessor={frameProcessor}
-        pixelFormat="yuv"
+        photo={true}
       />
-
-      {/* Detection Overlays */}
-      {detections.map((detection) => {
-        // Convert normalized bbox to screen coordinates
-        // Note: bbox coordinates from YOLO are in pixels relative to model input size
-        // We may need to scale these based on screen dimensions
-        const { x, y, width, height } = detection.bbox;
-        return (
-          <View
-            key={detection.id}
-            style={[
-              styles.boundingBox,
-              {
-                left: x,
-                top: y,
-                width: width,
-                height: height,
-                borderColor: colors.detection,
-              },
-            ]}
-          >
-            <View style={[styles.boxLabel, { backgroundColor: colors.detection }]}>
-              <Text style={styles.boxLabelText}>
-                {detection.className} {Math.round(detection.confidence * 100)}%
-              </Text>
-            </View>
-          </View>
-        );
-      })}
 
       {/* Top Bar */}
       <View style={styles.topBar}>
@@ -205,13 +159,7 @@ export default function CameraScanScreen({ route, navigation }: Props) {
         </TouchableOpacity>
 
         <View style={styles.topCenter}>
-          {detectionCount > 0 && (
-            <View style={styles.detectionBadge}>
-              <Text style={styles.detectionBadgeText}>
-                {detectionCount} detected
-              </Text>
-            </View>
-          )}
+          <Text style={styles.modeLabel}>{modeLabels[mode] || 'Scan'}</Text>
         </View>
 
         <TouchableOpacity style={styles.topButton} activeOpacity={0.7}>
@@ -266,9 +214,10 @@ export default function CameraScanScreen({ route, navigation }: Props) {
 
           {/* Capture Button */}
           <TouchableOpacity
-            style={styles.captureButton}
+            style={[styles.captureButton, isCapturing && { opacity: 0.5 }]}
             activeOpacity={0.8}
-            onPress={() => navigation.navigate('ScanReview', { scanId: 'mock-scan-1' })}
+            onPress={handleCapture}
+            disabled={isCapturing}
           >
             <View style={styles.captureButtonInner} />
           </TouchableOpacity>
@@ -432,12 +381,6 @@ const styles = StyleSheet.create({
     backgroundColor: '#000000',
     paddingHorizontal: spacing.xl,
   },
-  loadingText: {
-    fontSize: fontSize.md,
-    color: colors.textSecondary,
-    marginTop: spacing.md,
-    textAlign: 'center',
-  },
   errorText: {
     fontSize: fontSize.lg,
     color: colors.text,
@@ -453,25 +396,6 @@ const styles = StyleSheet.create({
   retryButtonText: {
     fontSize: fontSize.md,
     fontWeight: fontWeight.semibold,
-    color: '#FFFFFF',
-  },
-  // Detection bounding boxes
-  boundingBox: {
-    position: 'absolute',
-    borderWidth: 2,
-    borderRadius: borderRadius.xs,
-  },
-  boxLabel: {
-    position: 'absolute',
-    top: -20,
-    left: -2,
-    paddingHorizontal: 6,
-    paddingVertical: 2,
-    borderRadius: borderRadius.xs,
-  },
-  boxLabelText: {
-    fontSize: 11,
-    fontWeight: fontWeight.bold,
     color: '#FFFFFF',
   },
   // Top bar
@@ -503,16 +427,15 @@ const styles = StyleSheet.create({
     flex: 1,
     alignItems: 'center',
   },
-  detectionBadge: {
-    backgroundColor: colors.detection,
+  modeLabel: {
+    fontSize: 15,
+    fontWeight: fontWeight.semibold,
+    color: '#FFFFFF',
+    backgroundColor: 'rgba(0,0,0,0.4)',
     paddingHorizontal: 14,
     paddingVertical: 6,
     borderRadius: borderRadius.full,
-  },
-  detectionBadgeText: {
-    fontSize: 13,
-    fontWeight: fontWeight.semibold,
-    color: '#FFFFFF',
+    overflow: 'hidden',
   },
   // Bottom bar
   bottomBar: {

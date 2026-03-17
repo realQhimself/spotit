@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import {
   View,
   Text,
@@ -8,10 +8,13 @@ import {
   TextInput,
   TouchableOpacity,
   ActivityIndicator,
+  Modal,
+  FlatList,
 } from 'react-native';
 import { showAlert } from '../../utils/alert';
 import type { StackScreenProps } from '@react-navigation/stack';
 import type { ScanStackParamList } from '../../types/navigation';
+import type Room from '../../database/models/Room';
 import { colors } from '../../theme/colors';
 import { spacing, borderRadius } from '../../theme/spacing';
 import { fontSize, fontWeight } from '../../theme/typography';
@@ -21,6 +24,7 @@ import {
   createScanDetection,
   completeScan,
 } from '../../database/helpers/scanHelpers';
+import { getAllRooms, createRoom } from '../../database/helpers/roomHelpers';
 import { useScanStore } from '../../store/useScanStore';
 
 type Props = StackScreenProps<ScanStackParamList, 'ScanReview'>;
@@ -59,6 +63,16 @@ export default function ScanReviewScreen({ route, navigation }: Props) {
   const { scanId } = route.params;
   const storeDetections = useScanStore((state) => state.detections);
   const [isSaving, setIsSaving] = useState(false);
+  const [showRoomPicker, setShowRoomPicker] = useState(false);
+  const [rooms, setRooms] = useState<Room[]>([]);
+  const [newRoomName, setNewRoomName] = useState('');
+  const [isCreatingRoom, setIsCreatingRoom] = useState(false);
+
+  // Fetch rooms for the picker
+  useEffect(() => {
+    const sub = getAllRooms().subscribe(setRooms);
+    return () => sub.unsubscribe();
+  }, []);
 
   // Convert store detections to UI format with colors
   // Fall back to mock data if no real detections are available (for development)
@@ -87,24 +101,40 @@ export default function ScanReviewScreen({ route, navigation }: Props) {
     );
   };
 
-  const handleSaveAll = async () => {
+  const handleRoomSelected = useCallback(async (roomId: string) => {
+    useScanStore.getState().setRoom(roomId);
+    setShowRoomPicker(false);
+    // Proceed to save with the newly selected room
+    await saveWithRoom(roomId);
+  }, [detections, navigation]);
+
+  const handleCreateAndSelect = useCallback(async () => {
+    const trimmed = newRoomName.trim();
+    if (!trimmed) return;
+    setIsCreatingRoom(true);
+    try {
+      const room = await createRoom(trimmed);
+      setNewRoomName('');
+      useScanStore.getState().setRoom(room.id);
+      setShowRoomPicker(false);
+      // Proceed to save with the newly created room
+      await saveWithRoom(room.id);
+    } catch (err) {
+      console.error('Failed to create room:', err);
+      showAlert('Error', 'Failed to create room. Please try again.');
+    } finally {
+      setIsCreatingRoom(false);
+    }
+  }, [newRoomName, detections, navigation]);
+
+  const saveWithRoom = async (roomId: string) => {
     const {
-      selectedRoomId,
       selectedZoneId,
       scanMode,
       capturedPhotoUri,
       clearDetections,
       detections: originalDetections,
     } = useScanStore.getState();
-
-    if (!selectedRoomId) {
-      showAlert(
-        'No Room Selected',
-        'Please select a room before saving items. Go back and choose a room from the scan settings.',
-        [{ text: 'OK' }],
-      );
-      return;
-    }
 
     if (detections.length === 0) {
       showAlert('No Items', 'There are no items to save.');
@@ -116,7 +146,7 @@ export default function ScanReviewScreen({ route, navigation }: Props) {
     try {
       // 1. Create the Scan record
       const scan = await createScan({
-        roomId: selectedRoomId,
+        roomId,
         zoneId: selectedZoneId,
         scanType: scanMode || 'quick',
         photoUri: capturedPhotoUri,
@@ -124,21 +154,17 @@ export default function ScanReviewScreen({ route, navigation }: Props) {
 
       // 2. Create Items and ScanDetections for each detection
       const savePromises = detections.map(async (item) => {
-        // Find the original detection to get bbox info
         const originalDetection = originalDetections.find((d) => d.id === item.id);
 
-        // Create the Item record
         const createdItem = await createItem({
           name: item.name,
           category: item.category,
-          roomId: selectedRoomId,
+          roomId,
           zoneId: selectedZoneId ?? undefined,
           confidence: item.confidence,
           yoloClass: originalDetection?.className || item.category,
         });
 
-        // Create the ScanDetection record linking the scan and item
-        // Only if we have an original detection (not mock data)
         if (originalDetection || originalDetections.length === 0) {
           await createScanDetection({
             scanId: scan.id,
@@ -181,6 +207,18 @@ export default function ScanReviewScreen({ route, navigation }: Props) {
     } finally {
       setIsSaving(false);
     }
+  };
+
+  const handleSaveAll = async () => {
+    const { selectedRoomId } = useScanStore.getState();
+
+    if (!selectedRoomId) {
+      // Instead of blocking, show room picker so user can choose or create a room
+      setShowRoomPicker(true);
+      return;
+    }
+
+    await saveWithRoom(selectedRoomId);
   };
 
   return (
@@ -296,6 +334,89 @@ export default function ScanReviewScreen({ route, navigation }: Props) {
           )}
         </TouchableOpacity>
       </View>
+
+      {/* Room Picker Modal — shown when saving without a room selected */}
+      <Modal
+        visible={showRoomPicker}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setShowRoomPicker(false)}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalContent}>
+            <View style={styles.modalHeader}>
+              <Text style={styles.modalTitle}>Select a Room</Text>
+              <TouchableOpacity
+                onPress={() => setShowRoomPicker(false)}
+                activeOpacity={0.7}
+              >
+                <Text style={styles.modalClose}>{'\u2715'}</Text>
+              </TouchableOpacity>
+            </View>
+
+            <Text style={styles.modalSubtitle}>
+              Choose where to save these items, or create a new room.
+            </Text>
+
+            {/* Create New Room */}
+            <View style={styles.createRoomRow}>
+              <TextInput
+                style={styles.createRoomInput}
+                placeholder="New room name..."
+                placeholderTextColor={colors.textTertiary}
+                value={newRoomName}
+                onChangeText={setNewRoomName}
+                autoCapitalize="words"
+                returnKeyType="done"
+                onSubmitEditing={handleCreateAndSelect}
+              />
+              <TouchableOpacity
+                style={[
+                  styles.createRoomButton,
+                  (!newRoomName.trim() || isCreatingRoom) && styles.createRoomButtonDisabled,
+                ]}
+                onPress={handleCreateAndSelect}
+                disabled={!newRoomName.trim() || isCreatingRoom}
+                activeOpacity={0.7}
+              >
+                {isCreatingRoom ? (
+                  <ActivityIndicator color="#FFFFFF" size="small" />
+                ) : (
+                  <Text style={styles.createRoomButtonText}>+ Create</Text>
+                )}
+              </TouchableOpacity>
+            </View>
+
+            {/* Existing Rooms List */}
+            {rooms.length > 0 && (
+              <Text style={styles.existingRoomsLabel}>Existing rooms</Text>
+            )}
+
+            <FlatList
+              data={rooms}
+              keyExtractor={(item) => item.id}
+              renderItem={({ item }) => (
+                <TouchableOpacity
+                  style={styles.pickerItem}
+                  onPress={() => handleRoomSelected(item.id)}
+                  activeOpacity={0.7}
+                >
+                  <Text style={styles.pickerItemIcon}>{'\u{1F3E0}'}</Text>
+                  <Text style={styles.pickerItemText}>{item.name}</Text>
+                  <Text style={styles.pickerArrow}>{'\u203A'}</Text>
+                </TouchableOpacity>
+              )}
+              ListEmptyComponent={
+                <View style={styles.emptyPicker}>
+                  <Text style={styles.emptyPickerText}>
+                    No rooms yet. Create your first room above!
+                  </Text>
+                </View>
+              }
+            />
+          </View>
+        </View>
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -497,5 +618,115 @@ const styles = StyleSheet.create({
     fontSize: fontSize.lg,
     fontWeight: fontWeight.bold,
     color: '#FFFFFF',
+  },
+  // Room Picker Modal
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.7)',
+    justifyContent: 'flex-end',
+  },
+  modalContent: {
+    backgroundColor: colors.surface,
+    borderTopLeftRadius: borderRadius.lg,
+    borderTopRightRadius: borderRadius.lg,
+    paddingTop: spacing.md,
+    paddingBottom: 44,
+    maxHeight: '70%',
+  },
+  modalHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: spacing.lg,
+    paddingBottom: spacing.sm,
+  },
+  modalTitle: {
+    fontSize: fontSize.xl,
+    fontWeight: fontWeight.bold,
+    color: colors.text,
+  },
+  modalClose: {
+    fontSize: 20,
+    color: colors.textSecondary,
+    paddingHorizontal: spacing.sm,
+  },
+  modalSubtitle: {
+    fontSize: fontSize.sm,
+    color: colors.textSecondary,
+    paddingHorizontal: spacing.lg,
+    paddingBottom: spacing.md,
+  },
+  createRoomRow: {
+    flexDirection: 'row',
+    paddingHorizontal: spacing.lg,
+    paddingBottom: spacing.md,
+    gap: spacing.sm,
+  },
+  createRoomInput: {
+    flex: 1,
+    fontSize: fontSize.md,
+    color: colors.text,
+    backgroundColor: colors.background,
+    borderRadius: borderRadius.md,
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.sm,
+    borderWidth: 1,
+    borderColor: colors.border,
+  },
+  createRoomButton: {
+    backgroundColor: colors.success,
+    borderRadius: borderRadius.md,
+    paddingHorizontal: spacing.md,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  createRoomButtonDisabled: {
+    opacity: 0.5,
+  },
+  createRoomButtonText: {
+    fontSize: fontSize.sm,
+    fontWeight: fontWeight.bold,
+    color: '#FFFFFF',
+  },
+  existingRoomsLabel: {
+    fontSize: fontSize.sm,
+    fontWeight: fontWeight.semibold,
+    color: colors.textSecondary,
+    paddingHorizontal: spacing.lg,
+    paddingBottom: spacing.sm,
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+  },
+  pickerItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: spacing.md,
+    paddingHorizontal: spacing.lg,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.border,
+    gap: spacing.sm,
+  },
+  pickerItemIcon: {
+    fontSize: 20,
+  },
+  pickerItemText: {
+    flex: 1,
+    fontSize: fontSize.md,
+    fontWeight: fontWeight.medium,
+    color: colors.text,
+  },
+  pickerArrow: {
+    fontSize: 20,
+    color: colors.textTertiary,
+  },
+  emptyPicker: {
+    paddingVertical: spacing.xl,
+    paddingHorizontal: spacing.lg,
+    alignItems: 'center',
+  },
+  emptyPickerText: {
+    fontSize: fontSize.md,
+    color: colors.textSecondary,
+    textAlign: 'center',
   },
 });
