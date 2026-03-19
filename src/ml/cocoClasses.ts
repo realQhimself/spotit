@@ -92,6 +92,45 @@ export const COCO_CLASSES: string[] = [
  *
  * Categories align with the CATEGORIES constant in src/utils/constants.ts.
  */
+/**
+ * COCO classes that are irrelevant for home inventory scanning.
+ * These are outdoor/vehicle/animal classes that would only produce false positives indoors.
+ */
+export const COCO_IRRELEVANT_CLASSES = new Set([
+  'person',
+  'bicycle',
+  'car',
+  'motorcycle',
+  'airplane',
+  'bus',
+  'train',
+  'truck',
+  'boat',
+  'traffic light',
+  'fire hydrant',
+  'stop sign',
+  'parking meter',
+  'bird',
+  'horse',
+  'sheep',
+  'cow',
+  'elephant',
+  'bear',
+  'zebra',
+  'giraffe',
+  'kite',
+  'surfboard',
+  'skis',
+  'snowboard',
+]);
+
+/**
+ * Check if a COCO class name is relevant for home inventory.
+ */
+export function isRelevantClass(className: string): boolean {
+  return !COCO_IRRELEVANT_CLASSES.has(className);
+}
+
 export const COCO_CLASS_TO_CATEGORY: Record<string, string> = {
   // People
   person: 'Personal',

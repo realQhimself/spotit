@@ -11,6 +11,7 @@ import {
   Modal,
   FlatList,
 } from 'react-native';
+import * as Haptics from 'expo-haptics';
 import { showAlert } from '../../utils/alert';
 import type { StackScreenProps } from '@react-navigation/stack';
 import type { ScanStackParamList } from '../../types/navigation';
@@ -18,14 +19,16 @@ import type Room from '../../database/models/Room';
 import { colors } from '../../theme/colors';
 import { spacing, borderRadius } from '../../theme/spacing';
 import { fontSize, fontWeight } from '../../theme/typography';
-import { createItem } from '../../database/helpers/itemHelpers';
+import { createItem, updateItem } from '../../database/helpers/itemHelpers';
 import {
   createScan,
   createScanDetection,
   completeScan,
 } from '../../database/helpers/scanHelpers';
-import { getAllRooms, createRoom } from '../../database/helpers/roomHelpers';
+import { getAllRooms, getRoomById, createRoom } from '../../database/helpers/roomHelpers';
 import { useScanStore } from '../../store/useScanStore';
+import { cropBoundingBox, imageToBase64 } from '../../ml/imageUtils';
+import { enrichmentQueue } from '../../services/enrichmentQueue';
 
 type Props = StackScreenProps<ScanStackParamList, 'ScanReview'>;
 
@@ -38,15 +41,6 @@ interface DetectionItem {
   zone: string;
   color: string;
 }
-
-// Mock data for development/testing when no real detections are available
-const MOCK_DETECTIONS: DetectionItem[] = [
-  { id: '1', name: 'Coffee Mug', category: 'Kitchenware', confidence: 0.94, room: 'Kitchen', zone: 'Counter', color: '#818CF8' },
-  { id: '2', name: 'Laptop', category: 'Electronics', confidence: 0.91, room: 'Office', zone: 'Desk', color: '#34D399' },
-  { id: '3', name: 'Phone', category: 'Electronics', confidence: 0.87, room: 'Office', zone: 'Desk', color: '#F59E0B' },
-  { id: '4', name: 'Water Bottle', category: 'Kitchen', confidence: 0.82, room: 'Kitchen', zone: 'Counter', color: '#F87171' },
-  { id: '5', name: 'Notebook', category: 'Office', confidence: 0.78, room: 'Office', zone: 'Desk', color: '#60A5FA' },
-];
 
 function getConfidenceColor(confidence: number): string {
   if (confidence >= 0.9) return colors.success;
@@ -67,6 +61,9 @@ export default function ScanReviewScreen({ route, navigation }: Props) {
   const [rooms, setRooms] = useState<Room[]>([]);
   const [newRoomName, setNewRoomName] = useState('');
   const [isCreatingRoom, setIsCreatingRoom] = useState(false);
+  const [showSuccessCard, setShowSuccessCard] = useState(false);
+  const [savedCount, setSavedCount] = useState(0);
+  const [savedRoomName, setSavedRoomName] = useState('');
 
   // Fetch rooms for the picker
   useEffect(() => {
@@ -75,7 +72,7 @@ export default function ScanReviewScreen({ route, navigation }: Props) {
   }, []);
 
   // Convert store detections to UI format with colors
-  // Fall back to mock data if no real detections are available (for development)
+  // Empty array if no real detections are available
   const [detections, setDetections] = useState<DetectionItem[]>(() => {
     if (storeDetections.length > 0) {
       return storeDetections.map((d, idx) => ({
@@ -88,10 +85,11 @@ export default function ScanReviewScreen({ route, navigation }: Props) {
         color: getRandomColor(idx),
       }));
     }
-    return MOCK_DETECTIONS;
+    return [];
   });
 
   const handleDismiss = (id: string) => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     setDetections((prev) => prev.filter((d) => d.id !== id));
   };
 
@@ -153,8 +151,26 @@ export default function ScanReviewScreen({ route, navigation }: Props) {
       });
 
       // 2. Create Items and ScanDetections for each detection
+      // Track created item IDs for enrichment pipeline
+      const createdItems: { itemId: string; detectionId: string }[] = [];
+
       const savePromises = detections.map(async (item) => {
         const originalDetection = originalDetections.find((d) => d.id === item.id);
+
+        // Crop thumbnail from the photo if we have a bbox and photo
+        let thumbnailUri: string | undefined;
+        if (capturedPhotoUri && originalDetection?.bbox) {
+          try {
+            thumbnailUri = await cropBoundingBox(
+              capturedPhotoUri,
+              originalDetection.bbox,
+              0, // imageWidth — cropBoundingBox currently returns original URI
+              0, // imageHeight — will be used once cropping is implemented
+            );
+          } catch (err) {
+            console.warn('[ScanReview] Failed to crop thumbnail:', err);
+          }
+        }
 
         const createdItem = await createItem({
           name: item.name,
@@ -163,7 +179,10 @@ export default function ScanReviewScreen({ route, navigation }: Props) {
           zoneId: selectedZoneId ?? undefined,
           confidence: item.confidence,
           yoloClass: originalDetection?.className || item.category,
+          thumbnailUri,
         });
+
+        createdItems.push({ itemId: createdItem.id, detectionId: item.id });
 
         if (originalDetection || originalDetections.length === 0) {
           await createScanDetection({
@@ -189,14 +208,63 @@ export default function ScanReviewScreen({ route, navigation }: Props) {
       // 3. Mark the scan as completed
       await completeScan(scan.id, detections.length);
 
-      // 4. Clear detections from the store
+      // 4. Start background enrichment pipeline
+      if (capturedPhotoUri) {
+        // Set up the enrichment callback to update items in the database
+        enrichmentQueue.onItemEnriched = async (itemId, result) => {
+          try {
+            await updateItem(itemId, {
+              name: result.name,
+              category: result.category,
+              subcategory: result.subcategory || null,
+              description: result.description || null,
+              tags: result.tags ? JSON.stringify(result.tags) : null,
+              cloudAiEnriched: 'true',
+            });
+          } catch (err) {
+            console.warn('[ScanReview] Failed to update enriched item:', err);
+          }
+        };
+
+        // Queue each detection for enrichment
+        for (const { itemId, detectionId } of createdItems) {
+          const originalDetection = originalDetections.find((d) => d.id === detectionId);
+          try {
+            let croppedUri = capturedPhotoUri;
+            if (originalDetection?.bbox) {
+              croppedUri = await cropBoundingBox(
+                capturedPhotoUri,
+                originalDetection.bbox,
+                0,
+                0,
+              );
+            }
+            const base64 = await imageToBase64(croppedUri);
+            enrichmentQueue.add(itemId, base64);
+          } catch (err) {
+            console.warn('[ScanReview] Failed to queue enrichment for', itemId, err);
+          }
+        }
+      }
+
+      // 5. Clear detections from the store
       clearDetections();
 
-      showAlert(
-        'Items Saved',
-        `Successfully saved ${detections.length} item${detections.length === 1 ? '' : 's'}.`,
-        [{ text: 'OK', onPress: () => navigation.popToTop() }],
-      );
+      // 6. Haptic feedback on success
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+
+      // 7. Show success card instead of alert
+      const count = detections.length;
+      let roomName = 'this room';
+      try {
+        const room = await getRoomById(roomId);
+        roomName = room.name;
+      } catch {
+        // fallback to generic name
+      }
+      setSavedCount(count);
+      setSavedRoomName(roomName);
+      setShowSuccessCard(true);
     } catch (error) {
       console.error('Failed to save items:', error);
       showAlert(
@@ -220,6 +288,64 @@ export default function ScanReviewScreen({ route, navigation }: Props) {
 
     await saveWithRoom(selectedRoomId);
   };
+
+  const handleSuccessDismiss = () => {
+    setShowSuccessCard(false);
+    navigation.popToTop();
+  };
+
+  // ── Empty state ───────────────────────────────────────────────────────
+  if (detections.length === 0 && !showSuccessCard) {
+    return (
+      <SafeAreaView style={styles.container}>
+        <View style={styles.header}>
+          <Text style={styles.headerTitle}>Review Items</Text>
+          <View style={styles.countBadge}>
+            <Text style={styles.countBadgeText}>0</Text>
+          </View>
+        </View>
+
+        <View style={styles.emptyStateContainer}>
+          <Text style={styles.emptyStateIcon}>{'\uD83D\uDCF7'}</Text>
+          <Text style={styles.emptyStateTitle}>No items detected</Text>
+          <Text style={styles.emptyStateSubtitle}>
+            Try scanning again with better lighting or a different angle
+          </Text>
+          <TouchableOpacity
+            style={styles.scanAgainButton}
+            activeOpacity={0.8}
+            onPress={() => navigation.goBack()}
+          >
+            <Text style={styles.scanAgainButtonText}>Scan Again</Text>
+          </TouchableOpacity>
+        </View>
+      </SafeAreaView>
+    );
+  }
+
+  // ── Success card ──────────────────────────────────────────────────────
+  if (showSuccessCard) {
+    return (
+      <SafeAreaView style={styles.container}>
+        <View style={styles.successContainer}>
+          <View style={styles.successCard}>
+            <Text style={styles.successIcon}>{'\u2705'}</Text>
+            <Text style={styles.successTitle}>Scan Complete!</Text>
+            <Text style={styles.successDetail}>
+              {savedCount} new item{savedCount === 1 ? '' : 's'} saved to {savedRoomName}
+            </Text>
+            <TouchableOpacity
+              style={styles.successButton}
+              activeOpacity={0.8}
+              onPress={handleSuccessDismiss}
+            >
+              <Text style={styles.successButtonText}>OK</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </SafeAreaView>
+    );
+  }
 
   return (
     <SafeAreaView style={styles.container}>
@@ -322,10 +448,13 @@ export default function ScanReviewScreen({ route, navigation }: Props) {
       {/* Save Button */}
       <View style={styles.bottomBar}>
         <TouchableOpacity
-          style={[styles.saveButton, isSaving && styles.saveButtonDisabled]}
+          style={[
+            styles.saveButton,
+            (isSaving || detections.length === 0) && styles.saveButtonDisabled,
+          ]}
           activeOpacity={0.8}
           onPress={handleSaveAll}
-          disabled={isSaving}
+          disabled={isSaving || detections.length === 0}
         >
           {isSaving ? (
             <ActivityIndicator color="#FFFFFF" size="small" />
@@ -615,6 +744,89 @@ const styles = StyleSheet.create({
     opacity: 0.6,
   },
   saveButtonText: {
+    fontSize: fontSize.lg,
+    fontWeight: fontWeight.bold,
+    color: '#FFFFFF',
+  },
+  // ── Empty state ───────────────────────────────────────────────────────
+  emptyStateContainer: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: spacing.xl,
+  },
+  emptyStateIcon: {
+    fontSize: 64,
+    marginBottom: spacing.md,
+  },
+  emptyStateTitle: {
+    fontSize: fontSize.xl,
+    fontWeight: fontWeight.bold,
+    color: colors.text,
+    marginBottom: spacing.sm,
+  },
+  emptyStateSubtitle: {
+    fontSize: fontSize.md,
+    color: colors.textSecondary,
+    textAlign: 'center',
+    lineHeight: 22,
+    marginBottom: spacing.lg,
+  },
+  scanAgainButton: {
+    backgroundColor: colors.primary,
+    borderRadius: borderRadius.md,
+    paddingVertical: spacing.md,
+    paddingHorizontal: spacing.xl,
+  },
+  scanAgainButtonText: {
+    fontSize: fontSize.lg,
+    fontWeight: fontWeight.bold,
+    color: '#FFFFFF',
+  },
+  // ── Success card ──────────────────────────────────────────────────────
+  successContainer: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: spacing.lg,
+  },
+  successCard: {
+    backgroundColor: colors.surface,
+    borderRadius: borderRadius.lg,
+    padding: spacing.xl,
+    alignItems: 'center',
+    width: '100%',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.1,
+    shadowRadius: 12,
+    elevation: 6,
+  },
+  successIcon: {
+    fontSize: 56,
+    marginBottom: spacing.md,
+  },
+  successTitle: {
+    fontSize: fontSize.xxl,
+    fontWeight: fontWeight.bold,
+    color: colors.text,
+    marginBottom: spacing.sm,
+  },
+  successDetail: {
+    fontSize: fontSize.md,
+    color: colors.textSecondary,
+    textAlign: 'center',
+    lineHeight: 22,
+    marginBottom: spacing.lg,
+  },
+  successButton: {
+    backgroundColor: colors.primary,
+    borderRadius: borderRadius.md,
+    paddingVertical: spacing.md,
+    paddingHorizontal: spacing.xl * 2,
+    alignItems: 'center',
+  },
+  successButtonText: {
     fontSize: fontSize.lg,
     fontWeight: fontWeight.bold,
     color: '#FFFFFF',

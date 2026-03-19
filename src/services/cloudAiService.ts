@@ -11,10 +11,10 @@ import type { EnrichmentResult } from '../types/detection';
 // ── Configuration ──────────────────────────────────────────────────────
 
 /**
- * API key for the Gemini API.
- * Replace with a real key or load from expo-secure-store / env variable.
+ * API key for the Gemini API — loaded from environment variable.
+ * Set EXPO_PUBLIC_GEMINI_API_KEY in .env file.
  */
-const GEMINI_API_KEY = 'YOUR_API_KEY';
+const GEMINI_API_KEY = process.env.EXPO_PUBLIC_GEMINI_API_KEY ?? '';
 
 /**
  * Gemini Flash-Lite endpoint — fast and cost-effective for structured extraction.
@@ -51,6 +51,20 @@ Respond with ONLY the JSON object, no markdown formatting, no code fences.`;
 export async function enrichItemWithCloudAI(
   croppedImageBase64: string,
 ): Promise<EnrichmentResult> {
+  if (!GEMINI_API_KEY) {
+    console.warn('[cloudAiService] No Gemini API key configured — skipping enrichment');
+    return {
+      name: 'Unknown item',
+      category: 'Miscellaneous',
+      subcategory: '',
+      color: '',
+      material: '',
+      sizeEstimate: '',
+      description: 'Enrichment skipped — no API key configured.',
+      tags: [],
+    };
+  }
+
   try {
     const url = `${GEMINI_ENDPOINT}?key=${GEMINI_API_KEY}`;
 
@@ -86,7 +100,10 @@ export async function enrichItemWithCloudAI(
 
     if (!response.ok) {
       const errorText = await response.text();
-      throw new Error(`Gemini API error ${response.status}: ${errorText}`);
+      const err = new Error(`Gemini API error ${response.status}: ${errorText}`);
+      // Attach status for callers that need to distinguish rate limits
+      (err as any).status = response.status;
+      throw err;
     }
 
     const data = await response.json();

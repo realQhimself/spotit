@@ -20,6 +20,7 @@ import { colors } from '../../theme/colors';
 import { spacing, borderRadius } from '../../theme/spacing';
 import { fontSize, fontWeight } from '../../theme/typography';
 import { useObjectDetection } from '../../ml/useObjectDetection';
+import { isRelevantClass } from '../../ml/cocoClasses';
 
 type Props = StackScreenProps<ScanStackParamList, 'CameraScan'>;
 
@@ -45,7 +46,8 @@ export default function CameraScanScreen({ route, navigation }: Props) {
   const videoRef = videoRefOpt!;
   const startDetection = startDetectionOpt!;
   const stopDetection = stopDetectionOpt!;
-  const detectionCount = detections.length;
+  const relevantDetections = detections.filter((d) => isRelevantClass(d.className));
+  const detectionCount = relevantDetections.length;
 
   const {
     selectedRoomId,
@@ -152,16 +154,30 @@ export default function CameraScanScreen({ route, navigation }: Props) {
     const scaleX = containerSize.width / 640;
     const scaleY = containerSize.height / 640;
 
-    for (const det of detections) {
+    const relevant = detections.filter((d) => isRelevantClass(d.className));
+
+    for (const det of relevant) {
       const { bbox } = det;
       const x = bbox.x * scaleX;
       const y = bbox.y * scaleY;
       const w = bbox.width * scaleX;
       const h = bbox.height * scaleY;
 
+      // Confidence-based line style
+      if (det.confidence >= 0.8) {
+        ctx.setLineDash([]);
+      } else if (det.confidence >= 0.6) {
+        ctx.setLineDash([6, 4]);
+      } else {
+        ctx.setLineDash([2, 4]);
+      }
+
       ctx.strokeStyle = colors.detection;
       ctx.lineWidth = 2;
       ctx.strokeRect(x, y, w, h);
+
+      // Reset dash for label background
+      ctx.setLineDash([]);
 
       const label = `${det.className} ${Math.round(det.confidence * 100)}%`;
       ctx.font = 'bold 12px sans-serif';
@@ -196,10 +212,12 @@ export default function CameraScanScreen({ route, navigation }: Props) {
       console.warn('Failed to capture photo frame:', err);
     }
 
-    // Store detections
+    // Store only relevant detections
     store.clearDetections();
     for (const det of detections) {
-      store.addDetection(det);
+      if (isRelevantClass(det.className)) {
+        store.addDetection(det);
+      }
     }
 
     // Stop camera stream before navigating away

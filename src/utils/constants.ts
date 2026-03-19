@@ -11,8 +11,8 @@ export const API = {
 
 // ── Scan / detection settings ───────────────────────────────────────────
 export const SCAN = {
-  /** Minimum confidence to keep a detection. */
-  CONFIDENCE_THRESHOLD: 0.4,
+  /** Minimum confidence to keep a detection (raised from 0.4 to reduce false positives). */
+  CONFIDENCE_THRESHOLD: 0.5,
   /** IoU threshold for non-max suppression. */
   NMS_IOU_THRESHOLD: 0.45,
   /** Cap on the number of detections per frame / photo. */

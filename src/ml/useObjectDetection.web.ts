@@ -6,7 +6,7 @@
 
 import { useState, useRef, useCallback, useEffect } from 'react';
 import { parseYoloOutput, nonMaxSuppression } from './yoloPostProcess';
-import { COCO_CLASSES } from './cocoClasses';
+import { COCO_CLASSES, isRelevantClass } from './cocoClasses';
 import { SCAN } from '../utils/constants';
 import type { Detection } from '../types/detection';
 
@@ -63,15 +63,20 @@ function loadOrt(): Promise<any> {
 
 // ── Preprocessing ────────────────────────────────────────────────────────
 
-function rgbaToChwFloat32(rgba: Uint8ClampedArray, w: number, h: number): Float32Array {
-  const chw = new Float32Array(3 * w * h);
+/**
+ * Convert RGBA pixel data to CHW float32 format for ONNX.
+ * Accepts an output buffer to avoid per-frame allocation.
+ */
+function rgbaToChwFloat32(rgba: Uint8ClampedArray, w: number, h: number, out: Float32Array): void {
   for (let i = 0; i < w * h; i++) {
-    chw[i] = rgba[i * 4] / 255;              // R channel
-    chw[w * h + i] = rgba[i * 4 + 1] / 255;  // G channel
-    chw[2 * w * h + i] = rgba[i * 4 + 2] / 255; // B channel
+    out[i] = rgba[i * 4] / 255;              // R channel
+    out[w * h + i] = rgba[i * 4 + 1] / 255;  // G channel
+    out[2 * w * h + i] = rgba[i * 4 + 2] / 255; // B channel
   }
-  return chw;
 }
+
+// Pre-allocated buffer for CHW data — reused every frame to avoid GC pressure
+const chwBuffer = new Float32Array(3 * MODEL_INPUT_SIZE * MODEL_INPUT_SIZE);
 
 // ── Hook ─────────────────────────────────────────────────────────────────
 
@@ -137,6 +142,11 @@ export function useObjectDetection(): UseObjectDetectionResult {
       if (rafRef.current) {
         cancelAnimationFrame(rafRef.current);
       }
+      // Release the ONNX session to free WASM memory
+      if (sessionRef.current) {
+        sessionRef.current.release?.();
+        sessionRef.current = null;
+      }
     };
   }, []);
 
@@ -170,13 +180,19 @@ export function useObjectDetection(): UseObjectDetectionResult {
       ctx.drawImage(video, 0, 0, MODEL_INPUT_SIZE, MODEL_INPUT_SIZE);
       const imageData = ctx.getImageData(0, 0, MODEL_INPUT_SIZE, MODEL_INPUT_SIZE);
 
-      // RGBA -> CHW Float32 (ONNX uses NCHW format)
-      const chwData = rgbaToChwFloat32(imageData.data, MODEL_INPUT_SIZE, MODEL_INPUT_SIZE);
+      // RGBA -> CHW Float32 (ONNX uses NCHW format) — reuse pre-allocated buffer
+      rgbaToChwFloat32(imageData.data, MODEL_INPUT_SIZE, MODEL_INPUT_SIZE, chwBuffer);
 
       // Create tensor and run inference
       const ortLib = (window as any).ort;
-      const tensor = new ortLib.Tensor('float32', chwData, [1, 3, MODEL_INPUT_SIZE, MODEL_INPUT_SIZE]);
-      const results = await sessionRef.current.run({ images: tensor });
+      const tensor = new ortLib.Tensor('float32', chwBuffer, [1, 3, MODEL_INPUT_SIZE, MODEL_INPUT_SIZE]);
+      let results: any;
+      try {
+        results = await sessionRef.current.run({ images: tensor });
+      } finally {
+        // Dispose input tensor to free WASM memory
+        tensor.dispose?.();
+      }
 
       // Get output - YOLOv11 outputs shape [1, 84, 8400]
       const outputKey = Object.keys(results)[0];
@@ -187,7 +203,13 @@ export function useObjectDetection(): UseObjectDetectionResult {
 
       // Use existing post-processing
       const rawDetections = parseYoloOutput(outputData, 80, CONFIDENCE_THRESHOLD);
-      const nmsDetections = nonMaxSuppression(rawDetections, IOU_THRESHOLD);
+      const nmsDetections = nonMaxSuppression(rawDetections, IOU_THRESHOLD)
+        .filter(d => isRelevantClass(COCO_CLASSES[d.classId] || ''));
+
+      // Dispose output tensors to free WASM memory
+      for (const key of Object.keys(results)) {
+        results[key].dispose?.();
+      }
 
       // Convert to Detection format
       const newDetections: Detection[] = nmsDetections.map((d, idx) => ({
