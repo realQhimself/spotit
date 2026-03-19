@@ -1,3 +1,12 @@
+/**
+ * Web camera scan screen — STATIC SCAN MODE.
+ *
+ * Shows a live camera preview (no AI running). User taps capture,
+ * then the photo is sent to Gemini for comprehensive item detection.
+ * This avoids the WASM memory crash that live ONNX detection causes
+ * on mobile Safari.
+ */
+
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import {
   View,
@@ -19,8 +28,8 @@ import { getZonesByRoom } from '../../database/helpers/zoneHelpers';
 import { colors } from '../../theme/colors';
 import { spacing, borderRadius } from '../../theme/spacing';
 import { fontSize, fontWeight } from '../../theme/typography';
-import { useObjectDetection } from '../../ml/useObjectDetection';
-import { isRelevantClass } from '../../ml/cocoClasses';
+import { detectItemsFromPhoto } from '../../services/cloudAiService';
+import type { Detection } from '../../types/detection';
 
 type Props = StackScreenProps<ScanStackParamList, 'CameraScan'>;
 
@@ -31,23 +40,11 @@ export default function CameraScanScreen({ route, navigation }: Props) {
   const [rooms, setRooms] = useState<Room[]>([]);
   const [zones, setZones] = useState<Zone[]>([]);
   const [cameraError, setCameraError] = useState<string | null>(null);
-  const [containerSize, setContainerSize] = useState({ width: 0, height: 0 });
+  const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const [cameraReady, setCameraReady] = useState(false);
 
-  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const videoRef = useRef<HTMLVideoElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
-
-  const {
-    detections,
-    modelState,
-    videoRef: videoRefOpt,
-    startDetection: startDetectionOpt,
-    stopDetection: stopDetectionOpt,
-  } = useObjectDetection();
-  const videoRef = videoRefOpt!;
-  const startDetection = startDetectionOpt!;
-  const stopDetection = stopDetectionOpt!;
-  const relevantDetections = detections.filter((d) => isRelevantClass(d.className));
-  const detectionCount = relevantDetections.length;
 
   const {
     selectedRoomId,
@@ -56,7 +53,7 @@ export default function CameraScanScreen({ route, navigation }: Props) {
     setZone,
   } = useScanStore();
 
-  // ── Camera setup via getUserMedia ────────────────────────────────────
+  // ── Camera setup via getUserMedia (preview only, no AI) ──────────────
   useEffect(() => {
     let cancelled = false;
 
@@ -76,10 +73,7 @@ export default function CameraScanScreen({ route, navigation }: Props) {
           videoRef.current.srcObject = mediaStream;
           videoRef.current.onloadedmetadata = () => {
             videoRef.current?.play().catch(() => {});
-            // Small delay to let the video stabilize before starting detection
-            setTimeout(() => {
-              if (!cancelled) startDetection();
-            }, 500);
+            if (!cancelled) setCameraReady(true);
           };
         }
       } catch (err: any) {
@@ -93,19 +87,16 @@ export default function CameraScanScreen({ route, navigation }: Props) {
       }
     }
 
-    if (modelState === 'ready') {
-      initCamera();
-    }
+    initCamera();
 
     return () => {
       cancelled = true;
-      stopDetection();
       if (streamRef.current) {
         streamRef.current.getTracks().forEach((t) => t.stop());
         streamRef.current = null;
       }
     };
-  }, [modelState]);
+  }, []);
 
   // ── Fetch rooms ──────────────────────────────────────────────────────
   useEffect(() => {
@@ -133,70 +124,19 @@ export default function CameraScanScreen({ route, navigation }: Props) {
     setShowZonePicker(false);
   };
 
-  // ── Measure container for bbox scaling ───────────────────────────────
-  const onLayout = useCallback((e: any) => {
-    const { width, height } = e.nativeEvent.layout;
-    setContainerSize({ width, height });
-  }, []);
+  // ── Capture + Analyze handler ─────────────────────────────────────────
+  const handleCapture = useCallback(async () => {
+    if (isAnalyzing) return;
+    setIsAnalyzing(true);
 
-  // ── Draw bounding boxes on canvas overlay ────────────────────────────
-  useEffect(() => {
-    const canvas = canvasRef.current;
-    if (!canvas || containerSize.width === 0) return;
-
-    canvas.width = containerSize.width;
-    canvas.height = containerSize.height;
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return;
-
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-
-    const scaleX = containerSize.width / 640;
-    const scaleY = containerSize.height / 640;
-
-    const relevant = detections.filter((d) => isRelevantClass(d.className));
-
-    for (const det of relevant) {
-      const { bbox } = det;
-      const x = bbox.x * scaleX;
-      const y = bbox.y * scaleY;
-      const w = bbox.width * scaleX;
-      const h = bbox.height * scaleY;
-
-      // Confidence-based line style
-      if (det.confidence >= 0.8) {
-        ctx.setLineDash([]);
-      } else if (det.confidence >= 0.6) {
-        ctx.setLineDash([6, 4]);
-      } else {
-        ctx.setLineDash([2, 4]);
-      }
-
-      ctx.strokeStyle = colors.detection;
-      ctx.lineWidth = 2;
-      ctx.strokeRect(x, y, w, h);
-
-      // Reset dash for label background
-      ctx.setLineDash([]);
-
-      const label = `${det.className} ${Math.round(det.confidence * 100)}%`;
-      ctx.font = 'bold 12px sans-serif';
-      const textW = ctx.measureText(label).width;
-      ctx.fillStyle = colors.detection;
-      ctx.fillRect(x, y - 18, textW + 8, 18);
-      ctx.fillStyle = '#FFFFFF';
-      ctx.fillText(label, x + 4, y - 4);
-    }
-  }, [detections, containerSize]);
-
-  // ── Capture handler ──────────────────────────────────────────────────
-  const handleCapture = useCallback(() => {
-    stopDetection();
     const store = useScanStore.getState();
 
-    // Capture a frame from the video as a photo
     try {
+      // 1. Capture frame from video
       const video = videoRef.current;
+      let photoUri = '';
+      let imageBase64 = '';
+
       if (video && video.readyState >= 2) {
         const captureCanvas = document.createElement('canvas');
         captureCanvas.width = video.videoWidth;
@@ -204,59 +144,60 @@ export default function CameraScanScreen({ route, navigation }: Props) {
         const ctx = captureCanvas.getContext('2d');
         if (ctx) {
           ctx.drawImage(video, 0, 0);
-          const photoUri = captureCanvas.toDataURL('image/jpeg', 0.85);
+          photoUri = captureCanvas.toDataURL('image/jpeg', 0.85);
+          // Extract base64 data (remove the data:image/jpeg;base64, prefix)
+          imageBase64 = photoUri.split(',')[1] || '';
           store.setCapturedPhoto(photoUri);
         }
       }
-    } catch (err) {
-      console.warn('Failed to capture photo frame:', err);
-    }
 
-    // Store only relevant detections
-    store.clearDetections();
-    for (const det of detections) {
-      if (isRelevantClass(det.className)) {
-        store.addDetection(det);
+      // 2. Send to Gemini for comprehensive detection
+      store.clearDetections();
+
+      if (imageBase64) {
+        const geminiItems = await detectItemsFromPhoto(imageBase64);
+
+        // Convert Gemini results to Detection format
+        const detections: Detection[] = geminiItems.map((item, idx) => ({
+          id: `gemini-${Date.now()}-${idx}`,
+          classId: idx,
+          className: item.name,
+          confidence: item.confidence,
+          bbox: { x: 0, y: 0, width: 0, height: 0 },
+          enrichmentStatus: 'enriched' as const,
+          enrichment: {
+            name: item.name,
+            category: item.category,
+            subcategory: '',
+            brand: item.brand,
+            color: item.color,
+            material: '',
+            sizeEstimate: '',
+            description: item.description,
+            tags: item.tags,
+          },
+        }));
+
+        for (const det of detections) {
+          store.addDetection(det);
+        }
       }
+
+      // 3. Stop camera stream
+      if (streamRef.current) {
+        streamRef.current.getTracks().forEach((t) => t.stop());
+        streamRef.current = null;
+      }
+
+      // 4. Navigate to review
+      navigation.navigate('ScanReview', { scanId: `web-scan-${Date.now()}` });
+    } catch (err) {
+      console.warn('Capture/analyze failed:', err);
+      setIsAnalyzing(false);
     }
+  }, [isAnalyzing, navigation]);
 
-    // Stop camera stream before navigating away
-    if (streamRef.current) {
-      streamRef.current.getTracks().forEach((t) => t.stop());
-      streamRef.current = null;
-    }
-
-    navigation.navigate('ScanReview', { scanId: `web-scan-${Date.now()}` });
-  }, [detections, navigation, stopDetection]);
-
-  // ── Loading state ────────────────────────────────────────────────────
-  if (modelState === 'idle' || modelState === 'loading') {
-    return (
-      <View style={styles.container}>
-        <StatusBar barStyle="light-content" />
-        <View style={styles.loadingContainer}>
-          <ActivityIndicator size="large" color={colors.primary} />
-          <Text style={styles.loadingText}>Loading AI detection model...</Text>
-          <Text style={styles.loadingSubtext}>First load may take a few seconds</Text>
-        </View>
-      </View>
-    );
-  }
-
-  if (modelState === 'error') {
-    return (
-      <View style={styles.container}>
-        <StatusBar barStyle="light-content" />
-        <View style={styles.loadingContainer}>
-          <Text style={styles.errorText}>Failed to load detection model</Text>
-          <TouchableOpacity style={styles.retryButton} onPress={() => navigation.goBack()} activeOpacity={0.7}>
-            <Text style={styles.retryButtonText}>Go Back</Text>
-          </TouchableOpacity>
-        </View>
-      </View>
-    );
-  }
-
+  // ── Error states ──────────────────────────────────────────────────────
   if (cameraError) {
     return (
       <View style={styles.container}>
@@ -272,10 +213,10 @@ export default function CameraScanScreen({ route, navigation }: Props) {
   }
 
   return (
-    <View style={styles.container} onLayout={onLayout}>
+    <View style={styles.container}>
       <StatusBar barStyle="light-content" />
 
-      {/* HTML5 Video Feed */}
+      {/* HTML5 Video Feed — preview only, no AI running */}
       <video
         ref={videoRef}
         autoPlay
@@ -289,31 +230,25 @@ export default function CameraScanScreen({ route, navigation }: Props) {
         } as any}
       />
 
-      {/* Canvas overlay for bounding boxes */}
-      <canvas
-        ref={canvasRef}
-        style={{
-          position: 'absolute',
-          top: 0, left: 0,
-          width: '100%', height: '100%',
-          pointerEvents: 'none',
-        } as any}
-      />
+      {/* Analyzing overlay */}
+      {isAnalyzing && (
+        <View style={styles.analyzingOverlay}>
+          <ActivityIndicator size="large" color="#FFFFFF" />
+          <Text style={styles.analyzingText}>Analyzing photo...</Text>
+          <Text style={styles.analyzingSubtext}>AI is identifying all items</Text>
+        </View>
+      )}
 
       {/* Top Bar */}
       <View style={styles.topBar}>
-        <TouchableOpacity style={styles.topButton} onPress={() => { stopDetection(); navigation.goBack(); }} activeOpacity={0.7}>
+        <TouchableOpacity style={styles.topButton} onPress={() => navigation.goBack()} activeOpacity={0.7}>
           <Text style={styles.topButtonText}>{'\u2190'}</Text>
         </TouchableOpacity>
 
         <View style={styles.topCenter}>
-          {detectionCount > 0 && (
-            <View style={styles.detectionBadge}>
-              <Text style={styles.detectionBadgeText}>
-                {detectionCount} detected
-              </Text>
-            </View>
-          )}
+          <View style={styles.modeBadge}>
+            <Text style={styles.modeBadgeText}>Photo Scan</Text>
+          </View>
         </View>
 
         <View style={styles.topButton} />
@@ -344,6 +279,13 @@ export default function CameraScanScreen({ route, navigation }: Props) {
         )}
       </View>
 
+      {/* Hint text */}
+      {!isAnalyzing && cameraReady && (
+        <View style={styles.hintContainer}>
+          <Text style={styles.hintText}>Point at items and tap the button to scan</Text>
+        </View>
+      )}
+
       {/* Bottom Bar */}
       <View style={styles.bottomBar}>
         <View style={styles.controlsRow}>
@@ -354,7 +296,12 @@ export default function CameraScanScreen({ route, navigation }: Props) {
             <Text style={styles.controlLabel}>Room</Text>
           </TouchableOpacity>
 
-          <TouchableOpacity style={styles.captureButton} activeOpacity={0.8} onPress={handleCapture}>
+          <TouchableOpacity
+            style={[styles.captureButton, isAnalyzing && { opacity: 0.4 }]}
+            activeOpacity={0.8}
+            onPress={handleCapture}
+            disabled={isAnalyzing}
+          >
             <View style={styles.captureButtonInner} />
           </TouchableOpacity>
 
@@ -362,7 +309,7 @@ export default function CameraScanScreen({ route, navigation }: Props) {
             <View style={styles.flashIcon}>
               <Text style={styles.controlIcon}>{'\u{1F4F7}'}</Text>
             </View>
-            <Text style={styles.controlLabel}>Web</Text>
+            <Text style={styles.controlLabel}>Photo</Text>
           </View>
         </View>
       </View>
@@ -453,18 +400,25 @@ export default function CameraScanScreen({ route, navigation }: Props) {
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#000000' },
   loadingContainer: { flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: '#000000', paddingHorizontal: spacing.xl },
-  loadingText: { fontSize: fontSize.md, color: colors.textSecondary, marginTop: spacing.md, textAlign: 'center' },
-  loadingSubtext: { fontSize: fontSize.sm, color: 'rgba(255,255,255,0.4)', marginTop: spacing.sm, textAlign: 'center' },
   errorText: { fontSize: fontSize.lg, color: colors.text, textAlign: 'center', marginBottom: spacing.lg },
   retryButton: { backgroundColor: colors.primary, paddingHorizontal: spacing.xl, paddingVertical: spacing.md, borderRadius: borderRadius.md },
   retryButtonText: { fontSize: fontSize.md, fontWeight: fontWeight.semibold, color: '#FFFFFF' },
-  topBar: { position: 'absolute', top: 0, left: 0, right: 0, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingTop: 56, paddingHorizontal: spacing.md, paddingBottom: spacing.sm },
+  // Analyzing overlay
+  analyzingOverlay: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.7)', alignItems: 'center', justifyContent: 'center', zIndex: 10 },
+  analyzingText: { fontSize: fontSize.xl, fontWeight: fontWeight.bold, color: '#FFFFFF', marginTop: spacing.lg },
+  analyzingSubtext: { fontSize: fontSize.sm, color: 'rgba(255,255,255,0.6)', marginTop: spacing.sm },
+  // Top bar
+  topBar: { position: 'absolute', top: 0, left: 0, right: 0, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingTop: 56, paddingHorizontal: spacing.md, paddingBottom: spacing.sm, zIndex: 5 },
   topButton: { width: 40, height: 40, borderRadius: 20, backgroundColor: 'rgba(0,0,0,0.4)', alignItems: 'center', justifyContent: 'center' },
   topButtonText: { fontSize: 22, color: '#FFFFFF' },
   topCenter: { flex: 1, alignItems: 'center' },
-  detectionBadge: { backgroundColor: colors.detection, paddingHorizontal: 14, paddingVertical: 6, borderRadius: borderRadius.full },
-  detectionBadgeText: { fontSize: 13, fontWeight: fontWeight.semibold, color: '#FFFFFF' },
-  bottomBar: { position: 'absolute', bottom: 0, left: 0, right: 0, paddingBottom: 44, paddingHorizontal: spacing.md, paddingTop: spacing.md, backgroundColor: 'rgba(0,0,0,0.6)' },
+  modeBadge: { backgroundColor: colors.primary, paddingHorizontal: 14, paddingVertical: 6, borderRadius: borderRadius.full },
+  modeBadgeText: { fontSize: 13, fontWeight: fontWeight.semibold, color: '#FFFFFF' },
+  // Hint
+  hintContainer: { position: 'absolute', bottom: 140, left: 0, right: 0, alignItems: 'center', zIndex: 5 },
+  hintText: { fontSize: fontSize.sm, color: 'rgba(255,255,255,0.8)', backgroundColor: 'rgba(0,0,0,0.5)', paddingHorizontal: 16, paddingVertical: 8, borderRadius: borderRadius.full, overflow: 'hidden' },
+  // Bottom bar
+  bottomBar: { position: 'absolute', bottom: 0, left: 0, right: 0, paddingBottom: 44, paddingHorizontal: spacing.md, paddingTop: spacing.md, backgroundColor: 'rgba(0,0,0,0.6)', zIndex: 5 },
   controlsRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-around' },
   controlButton: { width: 64, alignItems: 'center' },
   roomSelectorIcon: { width: 44, height: 44, borderRadius: 22, backgroundColor: 'rgba(255,255,255,0.15)', alignItems: 'center', justifyContent: 'center' },
@@ -473,12 +427,14 @@ const styles = StyleSheet.create({
   flashIcon: { width: 44, height: 44, borderRadius: 22, backgroundColor: 'rgba(255,255,255,0.15)', alignItems: 'center', justifyContent: 'center' },
   captureButton: { width: 72, height: 72, borderRadius: 36, backgroundColor: '#FFFFFF', alignItems: 'center', justifyContent: 'center', borderWidth: 4, borderColor: 'rgba(255,255,255,0.3)' },
   captureButtonInner: { width: 58, height: 58, borderRadius: 29, backgroundColor: '#FFFFFF', borderWidth: 2, borderColor: colors.border },
-  selectorBar: { position: 'absolute', top: 116, left: 0, right: 0, flexDirection: 'row', paddingHorizontal: spacing.md, gap: spacing.sm },
+  // Selector bar
+  selectorBar: { position: 'absolute', top: 116, left: 0, right: 0, flexDirection: 'row', paddingHorizontal: spacing.md, gap: spacing.sm, zIndex: 5 },
   selectorButton: { flex: 1, flexDirection: 'row', alignItems: 'center', backgroundColor: 'rgba(0,0,0,0.6)', borderRadius: borderRadius.md, paddingHorizontal: spacing.sm, paddingVertical: spacing.sm, borderWidth: 1, borderColor: 'rgba(255,255,255,0.2)' },
   selectorIcon: { fontSize: 24, marginRight: spacing.sm },
   selectorTextContainer: { flex: 1 },
   selectorLabel: { fontSize: 10, color: 'rgba(255,255,255,0.6)', fontWeight: fontWeight.medium, marginBottom: 2 },
   selectorValue: { fontSize: 13, color: '#FFFFFF', fontWeight: fontWeight.semibold },
+  // Modal
   modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.7)', justifyContent: 'flex-end' },
   modalContent: { backgroundColor: colors.surface, borderTopLeftRadius: borderRadius.lg, borderTopRightRadius: borderRadius.lg, paddingTop: spacing.md, paddingBottom: 44, maxHeight: '70%' },
   modalHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: spacing.lg, paddingBottom: spacing.md, borderBottomWidth: 1, borderBottomColor: colors.border },

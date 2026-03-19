@@ -40,6 +40,26 @@ const ENRICHMENT_PROMPT = `You are an expert home inventory assistant. Analyze t
 
 Respond with ONLY the JSON object, no markdown formatting, no code fences.`;
 
+/**
+ * Prompt for full-photo item detection — asks Gemini to identify ALL items.
+ * Used by the web static scan mode as the primary detection method.
+ */
+const FULL_PHOTO_PROMPT = `You are an expert home inventory assistant. Look at this photo of a room or area and identify EVERY distinct item you can see.
+
+Return ONLY a valid JSON array. Each element should be:
+{
+  "name": "specific, descriptive name",
+  "category": "one of: Electronics, Furniture, Clothing, Kitchen, Books, Tools, Toys, Sports, Decor, Personal, Office, Bathroom, Garden, Automotive, Miscellaneous",
+  "confidence": 0.0 to 1.0 (how certain you are this item is present),
+  "brand": "brand name if visible, otherwise null",
+  "color": "primary color(s)",
+  "description": "brief one-sentence description useful for finding this item later",
+  "tags": ["searchable", "keywords"]
+}
+
+Be thorough — include small items, items partially hidden, items on shelves, etc.
+Respond with ONLY the JSON array, no markdown formatting, no code fences.`;
+
 // ── Main enrichment function ───────────────────────────────────────────
 
 /**
@@ -152,5 +172,105 @@ export async function enrichItemWithCloudAI(
       description: 'Could not enrich — AI service unavailable.',
       tags: [],
     };
+  }
+}
+
+// ── Full-photo item detection ─────────────────────────────────────────
+
+/**
+ * Result from full-photo Gemini detection (used by web static scan).
+ */
+export interface GeminiDetectedItem {
+  name: string;
+  category: string;
+  confidence: number;
+  brand?: string;
+  color: string;
+  description: string;
+  tags: string[];
+}
+
+/**
+ * Send a full photo to Gemini and have it identify ALL items in the image.
+ * This is the primary detection method for web static scan mode.
+ *
+ * @param imageBase64  Base64-encoded JPEG of the full photo.
+ * @returns Array of detected items, or empty array on failure.
+ */
+export async function detectItemsFromPhoto(
+  imageBase64: string,
+): Promise<GeminiDetectedItem[]> {
+  if (!GEMINI_API_KEY) {
+    console.warn('[cloudAiService] No Gemini API key — cannot detect items');
+    return [];
+  }
+
+  try {
+    const url = `${GEMINI_ENDPOINT}?key=${GEMINI_API_KEY}`;
+
+    const requestBody = {
+      contents: [
+        {
+          parts: [
+            {
+              inlineData: {
+                mimeType: 'image/jpeg',
+                data: imageBase64,
+              },
+            },
+            {
+              text: FULL_PHOTO_PROMPT,
+            },
+          ],
+        },
+      ],
+      generationConfig: {
+        temperature: 0.2,
+        maxOutputTokens: 2048,
+      },
+    };
+
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(requestBody),
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`Gemini API error ${response.status}: ${errorText}`);
+    }
+
+    const data = await response.json();
+    const textContent =
+      data?.candidates?.[0]?.content?.parts?.[0]?.text ?? '';
+
+    if (!textContent) {
+      throw new Error('Empty response from Gemini API');
+    }
+
+    const cleanedJson = textContent
+      .replace(/```json\s*/gi, '')
+      .replace(/```\s*/g, '')
+      .trim();
+
+    const parsed = JSON.parse(cleanedJson);
+
+    if (!Array.isArray(parsed)) {
+      throw new Error('Gemini response is not an array');
+    }
+
+    return parsed.map((item: any) => ({
+      name: item.name ?? 'Unknown item',
+      category: item.category ?? 'Miscellaneous',
+      confidence: typeof item.confidence === 'number' ? item.confidence : 0.7,
+      brand: item.brand ?? undefined,
+      color: item.color ?? '',
+      description: item.description ?? '',
+      tags: Array.isArray(item.tags) ? item.tags : [],
+    }));
+  } catch (error) {
+    console.warn('[cloudAiService] Full-photo detection failed:', error);
+    return [];
   }
 }
